@@ -1,0 +1,33 @@
+//@version=5
+indicator('Relative Strength Index', 'RSI')
+
+filter(float src, int len) =>
+    var float filter = na
+    filter := ta.cum((src + (src[1] * 2) + (src[2] * 2) + src[3])/6)
+    (filter - filter[len])/len
+
+
+len = input.int(8, 'Length', 1)
+ex_sm = input.int(1, "Extra Smoothing", 1)
+smooth_rsi = input.int(1, "Smooth RSI Filter", 1)
+stoch_leng = input.int(13, "Stochastic Length", 1)
+k = input.int(3, "K", 1)
+smoothD = input.int(3, "D", 1)
+
+rsi(src) =>
+    up = math.sum(src > src[1] ? src - src[1] : 0, len)
+    down = math.sum(src < src[1] ? src[1] - src : 0, len)
+    rsi = up + down != 0 ? up / (up + down) : 0
+
+Close = ta.sma(rsi(filter(close, smooth_rsi)), ex_sm)
+
+stoch = ta.sma(ta.stoch(Close, Close, Close, stoch_leng), k)
+d     = ta.sma(stoch, smoothD)
+
+
+plot(stoch, color=color.new(color.purple, 0))
+plot(d, "RSI-based MA", color=color.yellow)
+rsiUpperBand = hline(80, "RSI Upper Band", color=#787B86)
+hline(50, "RSI Middle Band", color=color.new(#787B86, 50))
+rsiLowerBand = hline(20, "RSI Lower Band", color=#787B86)
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126, 87, 194, 90), title="RSI Background Fill")

@@ -1,0 +1,61 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © loxx
+
+//@version=5
+indicator("Non-Lag Inverse Fisher Transform of RSX [Loxx]", 
+     shorttitle='NLIFTRSX [Loxx]', 
+     overlay = false, 
+     timeframe="", 
+     timeframe_gaps = true)
+     
+import loxx/loxxmas/1
+import loxx/loxxrsx/1
+
+greencolor = #2DD204
+redcolor = #D2042D
+
+per =  input.int(5, "Fisher Period") 
+src =  input.source(close, "Fisher Source")  
+nlper = input.int(15, "Non-Lag MA Period") 
+Level1 =  input.float(.9, "Upper Level") 
+Level2 =  input.float(0, "Middle") 
+Level3 = input.float(-.9, "Lower Level") 
+
+colorbars = input.bool(true, "Color bars?", group = "UI Options")
+showSigs = input.bool(true, "Show signals?", group = "UI Options")
+
+rsi = loxxrsx.rsx(src, per)
+[avg, _, _] = loxxmas.nonlagma(0.1 * (rsi - 50), nlper)
+fish = (math.exp(2 * avg) - 1) / (math.exp(2 * avg) + 1)
+
+trend = 0
+if (fish < Level1 and fish > Level3) 
+    trend := 0
+if (fish > Level1) 
+    trend := 1
+if (fish < Level3) 
+    trend := -1
+
+colorout = trend == 1 ? greencolor : trend == - 1 ? redcolor : color.gray
+fishpl = plot(fish, color = colorout, linewidth = 2)
+
+lvl1 = plot(Level1, color = bar_index % 2 ? greencolor : na)
+plot(Level2, color =  bar_index % 2 ? color.gray : na)
+lvl3 = plot(Level3, color =  bar_index % 2 ? redcolor : na)
+
+fill(lvl1, fishpl, color = fish > Level1 ? greencolor : na)
+fill(lvl3, fishpl, color = fish < Level3 ? redcolor : na)
+
+barcolor(colorbars ? colorout: na)
+
+goLong =  ta.crossover(fish, Level1)
+goShort =  ta.crossunder(fish, Level3)
+
+plotshape(showSigs and goLong, title = "Long", color = color.yellow, textcolor = color.yellow, text = "L", style = shape.triangleup, location = location.bottom, size = size.auto)
+plotshape(showSigs and goShort, title = "Short", color = color.fuchsia, textcolor = color.fuchsia, text = "S", style = shape.triangledown, location = location.top, size = size.auto)
+
+alertcondition(goLong, title="Long", message="Non-Lag Inverse Fisher Transform of RSX [Loxx]: Long\nSymbol: {{ticker}}\nPrice: {{close}}")
+alertcondition(goShort, title="Short", message="Non-Lag Inverse Fisher Transform of RSX [Loxx]: Short\nSymbol: {{ticker}}\nPrice: {{close}}")
+
+
+
