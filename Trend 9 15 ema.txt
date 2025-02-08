@@ -1,0 +1,30 @@
+//@version=4
+study(title="Trend Finding by EMAs", shorttitle="Colored EMA by Dharam", overlay=true)
+
+// Define the lengths for the two EMAs
+ema9Length = input(9, title="1ST EMA")
+ema21Length = input(21, title="2ND EMA")
+
+// Calculate the EMAs
+ema9 = ema(close, ema9Length)
+ema21 = ema(close, ema21Length)
+
+// Define the colors based on the condition
+ema9Color = ema9 > ema21 ? color.blue : color.red
+ema21Color = ema9 > ema21 ? color.blue : color.red
+
+// Plot the EMAs with the specified colors
+plot(ema9, title="1st EMA", color=ema9Color)
+plot(ema21, title="2nd EMA", color=ema21Color)
+
+// Buy and sell signals
+buySignal = crossover(ema9, ema21)
+sellSignal = crossunder(ema9, ema21)
+
+// Plot buy and sell signals with modified text size
+plotshape(series=buySignal, title="Buy Signal", location=location.belowbar, color=color.blue, style=shape.arrowup, text="Buy")
+plotshape(series=sellSignal, title="Sell Signal", location=location.abovebar, color=color.red, style=shape.arrowdown, text="Sell")
+
+// Alert 
+alertcondition(buySignal, title = "Buy" , message = "Buy Alert")
+alertcondition(sellSignal, title = "Sell" , message = "Sell Alert") 
