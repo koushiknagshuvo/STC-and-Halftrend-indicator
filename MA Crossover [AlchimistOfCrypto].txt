@@ -1,0 +1,153 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © AlchimistOfCrypto
+
+///    "Mathematics reveals the elegant patterns hidden within chaos." 🧮✨
+
+
+//@version=6
+indicator('MA Crossover [AlchimistOfCrypto]', overlay = true)
+a1 = input.bool(title = 'Use Preset', defval = true, tooltip = 'Enable to use optimized presets. Disable to customize parameters.', group = 'Mode Selection')
+a2 = input.string(title = 'Timeframe Preset', defval = '1D', options = ['1H', '4H', '1D', '1W', '2W'], tooltip = 'Select a preconfigured timeframe', group = 'Preset Settings')
+a3 = input.int(title = 'Custom Fast MA Length (Disable Use Preset)', defval = 23, minval = 1, group = 'Custom MA Settings')
+a4 = input.int(title = 'Custom Slow MA Length (Disable Use Preset)', defval = 395, minval = 1, group = 'Custom MA Settings')
+a5 = input.string(title = 'Custom MA Type (Disable Use Preset)', defval = 'EMA', options = ['SMA', 'EMA'], group = 'Custom MA Settings')
+a6 = input.string('Neon', 'Color Theme', ['Green-Red', 'Cyan-Magenta', 'Yellow-Purple', 'Forest Green', 'Blue Ocean', 'Orange-Red', 'Neon', 'Grayscale'], group = 'Style Settings')
+a7 = input.int(title = 'Opacity Level', defval = 10, minval = 0, maxval = 100, tooltip = 'Controls the global transparency of the indicator (0=transparent, 100=opaque)', group = 'Style Settings')
+z1 = (100 - a7) / 100
+z2 = math.max(z1 - 0.2, 0)
+var b1 = color.new(#00ff9f, math.round(20 * z1))
+var b2 = color.new(#ff0062, math.round(20 * z1))
+var b3 = color.new(#00ff9f, math.round(90 * z1))
+var b4 = color.new(#ff0062, math.round(90 * z1))
+var b5 = color.new(#FF6D00, math.round(60 * z1))
+if a6 == 'Green-Red'
+    b1 := color.new(#00ffbb, math.round(20 * z1))
+    b2 := color.new(#ff1100, math.round(20 * z1))
+    b3 := color.new(#00ffbb, math.round(90 * z1))
+    b4 := color.new(#ff1100, math.round(90 * z1))
+    b5 := color.new(#b4b4b4, math.round(60 * z1))
+    b5
+else if a6 == 'Cyan-Magenta'
+    b1 := color.new(#00ffff, math.round(20 * z1))
+    b2 := color.new(#ff00ff, math.round(20 * z1))
+    b3 := color.new(#00ffff, math.round(90 * z1))
+    b4 := color.new(#ff00ff, math.round(90 * z1))
+    b5 := color.new(#e6e678, math.round(60 * z1))
+    b5
+else if a6 == 'Yellow-Purple'
+    b1 := color.new(#fff000, math.round(20 * z1))
+    b2 := color.new(#8c00ff, math.round(20 * z1))
+    b3 := color.new(#fff000, math.round(90 * z1))
+    b4 := color.new(#8c00ff, math.round(90 * z1))
+    b5 := color.new(#00ffff, math.round(60 * z1))
+    b5
+else if a6 == 'Forest Green'
+    b1 := color.new(#359635, math.round(20 * z1))
+    b2 := color.new(#916335, math.round(20 * z1))
+    b3 := color.new(#359635, math.round(90 * z1))
+    b4 := color.new(#916335, math.round(90 * z1))
+    b5 := color.new(#b4b478, math.round(60 * z1))
+    b5
+else if a6 == 'Blue Ocean'
+    b1 := color.new(#0087bd, math.round(20 * z1))
+    b2 := color.new(#004370, math.round(20 * z1))
+    b3 := color.new(#0087bd, math.round(90 * z1))
+    b4 := color.new(#004370, math.round(90 * z1))
+    b5 := color.new(#78b4b4, math.round(60 * z1))
+    b5
+else if a6 == 'Orange-Red'
+    b1 := color.new(#ffa500, math.round(20 * z1))
+    b2 := color.new(#cc0000, math.round(20 * z1))
+    b3 := color.new(#ffa500, math.round(90 * z1))
+    b4 := color.new(#cc0000, math.round(90 * z1))
+    b5 := color.new(#ffff78, math.round(60 * z1))
+    b5
+else if a6 == 'Neon'
+    b1 := color.new(#00ff00, math.round(20 * z1))
+    b2 := color.new(#ff0000, math.round(20 * z1))
+    b3 := color.new(#00ff00, math.round(90 * z1))
+    b4 := color.new(#ff0000, math.round(90 * z1))
+    b5 := color.new(#ffffff, math.round(60 * z1))
+    b5
+else if a6 == 'Grayscale'
+    b1 := color.new(#dee2e6, math.round(20 * z1))
+    b2 := color.new(#495057, math.round(20 * z1))
+    b3 := color.new(#dee2e6, math.round(90 * z1))
+    b4 := color.new(#495057, math.round(90 * z1))
+    b5 := color.new(#969696, math.round(60 * z1))
+    b5
+var int c1 = 0
+var int c2 = 0
+var string c3 = ''
+if a1
+    if a2 == '1H'
+        c1 := 23
+        c2 := 395
+        c3 := 'EMA'
+        c3
+    else if a2 == '4H'
+        c1 := 41
+        c2 := 263
+        c3 := 'SMA'
+        c3
+    else if a2 == '1D'
+        c1 := 8
+        c2 := 44
+        c3 := 'SMA'
+        c3
+    else if a2 == '1W'
+        c1 := 32
+        c2 := 38
+        c3 := 'SMA'
+        c3
+    else if a2 == '2W'
+        c1 := 17
+        c2 := 20
+        c3 := 'SMA'
+        c3
+else
+    c1 := a3
+    c2 := a4
+    c3 := a5
+    c3
+d1 = c3 == 'SMA' ? ta.sma(close, c1) : ta.ema(close, c1)
+d2 = c3 == 'SMA' ? ta.sma(close, c2) : ta.ema(close, c2)
+d3 = d1 > d2 ? b1 : b2
+d4 = b5
+e1 = (5 * d1 + d2) / 6
+e2 = (4 * d1 + 2 * d2) / 6
+e3 = (3 * d1 + 3 * d2) / 6
+e4 = (2 * d1 + 4 * d2) / 6
+e5 = (d1 + 5 * d2) / 6
+f1 = plot(d1, 'Fast MA', color = d3, linewidth = 1)
+f2 = plot(d2, 'Slow MA', color = d4, linewidth = 1)
+f3 = math.round(45 * z1)
+f4 = math.round(50 * z1)
+f5 = math.round(60 * z1)
+f6 = math.round(70 * z1)
+f7 = math.round(80 * z1)
+g1 = plot(e1, '', color.new(#000000, 100), linewidth = 1, display = display.none)
+g2 = plot(e2, '', color.new(#000000, 100), linewidth = 1, display = display.none)
+g3 = plot(e3, '', color.new(#000000, 100), linewidth = 1, display = display.none)
+g4 = plot(e4, '', color.new(#000000, 100), linewidth = 1, display = display.none)
+g5 = plot(e5, '', color.new(#000000, 100), linewidth = 1, display = display.none)
+h1 = d1 > d2 ? b1 : b2
+fill(f1, g1, color.new(h1, f3))
+fill(g1, g2, color.new(h1, f4))
+fill(g2, g3, color.new(h1, f5))
+fill(g3, g4, color.new(h1, f6))
+fill(g4, g5, color.new(h1, f7))
+fill(g5, f2, color.new(h1, f7 + 5))
+i1 = ta.crossover(d1, d2)
+i2 = ta.crossunder(d1, d2)
+var int j1 = 0
+if i1 or i2
+    j1 := 0
+    j1
+else
+    j1 := j1 + 1
+    j1
+j2 = 20
+j1 := math.min(j1, j2)
+j3 = math.min(math.round((50 + j1 * 2) * z1), 90)
+
