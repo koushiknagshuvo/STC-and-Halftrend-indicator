@@ -1,0 +1,168 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © chaitu50c
+
+//@version=6
+indicator('ZoneRadar by Chaitu50c', overlay = true, max_boxes_count = 500)
+
+tf = input.timeframe('', 'Source Timeframe', tooltip = 'Select the timeframe to calculate signals from. Leave blank to use the chart timeframe.', group = '1) Source')
+
+level = input.float(1.8, 'Z-Score Level', step = 0.1, tooltip = 'Threshold for Z-Score. Higher values = fewer but stronger signals.', group = '2) Signal')
+lookback = input.int(20, 'Lookback Period', minval = 5, tooltip = 'Number of bars to calculate average and standard deviation of Z-Score.', group = '2) Signal')
+
+cooldownBars = input.int(6, 'Cooldown Bars', minval = 0, tooltip = 'Minimum number of bars to wait between new signals of the same type.', group = '3) Zones')
+mergeOnOverlap = input.bool(true, 'Merge Overlapping Zones', tooltip = 'If enabled, overlapping zones are merged into one larger zone.', group = '3) Zones')
+priceTolTicks = input.int(50, 'Price Tolerance (ticks)', minval = 0, tooltip = 'Tolerance in ticks when checking overlap between zones.', group = '3) Zones')
+keepHistoryN = input.int(4, 'Keep Last N Zones per Side', minval = 0, maxval = 50, tooltip = 'Number of past Buy/Sell zones to keep visible on chart.', group = '3) Zones')
+
+showBuyBoxes = input.bool(true, 'Show Buy Zones', tooltip = 'Enable to show highlighted Buy pressure zones.', group = '4) Display')
+showSellBoxes = input.bool(true, 'Show Sell Zones', tooltip = 'Enable to show highlighted Sell pressure zones.', group = '4) Display')
+extendBars = input.int(8, 'Right Extension (bars)', minval = 0, tooltip = 'Number of bars to extend each new zone to the right.', group = '4) Display')
+buyBoxColor = input.color(color.new(color.green, 83), 'Buy Zone Color', tooltip = 'Fill and border color for Buy zones.', group = '4) Display')
+sellBoxColor = input.color(color.new(color.red, 83), 'Sell Zone Color', tooltip = 'Fill and border color for Sell zones.', group = '4) Display')
+
+string _resTf = tf == '' ? timeframe.period : tf
+o = request.security(syminfo.tickerid, _resTf, open)
+h = request.security(syminfo.tickerid, _resTf, high)
+l = request.security(syminfo.tickerid, _resTf, low)
+c = request.security(syminfo.tickerid, _resTf, close)
+tfClosed = request.security(syminfo.tickerid, _resTf, barstate.isconfirmed)
+
+rng = math.max(h - l, 1e-6)
+obLow = math.min(o, c)
+obHigh = math.max(o, c)
+bodyH = obHigh - obLow
+upperW = h - obHigh
+lowerW = obLow - l
+bullB = math.max(c - o, 0.0)
+bearB = math.max(o - c, 0.0)
+
+rawDelta = (lowerW + bullB - (upperW + bearB)) / rng
+mu = ta.sma(rawDelta, lookback)
+sd = math.max(ta.stdev(rawDelta, lookback), 1e-9)
+z = (rawDelta - mu) / sd
+
+buyCross = ta.crossover(z, level)
+sellCross = ta.crossunder(z, -level)
+baseOk = tf == '' ? true : tfClosed
+
+var int lastBuyBar = na
+var int lastSellBar = na
+buyReady = na(lastBuyBar) or bar_index - lastBuyBar >= cooldownBars
+sellReady = na(lastSellBar) or bar_index - lastSellBar >= cooldownBars
+rawBuy = baseOk and buyCross and buyReady
+rawSell = baseOk and sellCross and sellReady
+fireBuy = rawBuy and not rawSell or rawBuy and rawSell and math.abs(z - level) >= math.abs(z + level)
+fireSell = rawSell and not rawBuy or rawBuy and rawSell and math.abs(z + level) > math.abs(z - level)
+if fireBuy
+    lastBuyBar := bar_index
+    lastBuyBar
+if fireSell
+    lastSellBar := bar_index
+    lastSellBar
+
+buyBodyDominant = bullB >= lowerW and bullB > 0
+sellBodyDominant = bearB >= upperW and bearB > 0
+fBox = 0.5
+
+calcBuyBox() =>
+    bool useBody = buyBodyDominant
+    float top = na
+    float bot = na
+    if useBody and bodyH > 0
+        top := obLow + fBox * bodyH
+        bot := obLow
+        bot
+    else
+        top := l + fBox * (obLow - l)
+        bot := l
+        bot
+    [top, bot]
+
+calcSellBox() =>
+    bool useBody = sellBodyDominant
+    float top = na
+    float bot = na
+    if useBody and bodyH > 0
+        top := obHigh
+        bot := obHigh - fBox * bodyH
+        bot
+    else
+        top := h
+        bot := h - fBox * (h - obHigh)
+        bot
+    [top, bot]
+
+tick = syminfo.mintick
+eps = tick * priceTolTicks
+
+[buyTopNew, buyBotNew] = calcBuyBox()
+[sellTopNew, sellBotNew] = calcSellBox()
+
+var array<box> buyBoxes = array.new_box()
+var array<box> sellBoxes = array.new_box()
+
+deleteAt(isBuy, idx) =>
+    array<box> bxA = isBuy ? buyBoxes : sellBoxes
+    if array.size(bxA) > idx
+        box b = array.remove(bxA, idx)
+        box.delete(b)
+
+createNew(isBuy, top, bot, colorBox) =>
+    box nb = box.new(bar_index, top, bar_index, bot, bgcolor = colorBox, border_width = 1, border_color = color.new(colorBox, 0))
+    if isBuy
+        array.push(buyBoxes, nb)
+        while array.size(buyBoxes) > keepHistoryN
+            deleteAt(true, 0)
+    else
+        array.push(sellBoxes, nb)
+        while array.size(sellBoxes) > keepHistoryN
+            deleteAt(false, 0)
+
+mergeIntoLast(isBuy, topNew, botNew) =>
+    array<box> bxA = isBuy ? buyBoxes : sellBoxes
+    int lastIdx = array.size(bxA) - 1
+    box lastBox = array.get(bxA, lastIdx)
+    float curTop = box.get_top(lastBox)
+    float curBot = box.get_bottom(lastBox)
+    float uTop = math.max(curTop, topNew)
+    float uBot = math.min(curBot, botNew)
+    box.set_top(lastBox, uTop)
+    box.set_bottom(lastBox, uBot)
+    box.set_right(lastBox, bar_index + extendBars)
+
+if showBuyBoxes and fireBuy
+    if array.size(buyBoxes) > 0
+        box lastB = array.get(buyBoxes, array.size(buyBoxes) - 1)
+        float curTopB = box.get_top(lastB)
+        float curBotB = box.get_bottom(lastB)
+        bool overlapB = not(buyBotNew > curTopB + eps or buyTopNew < curBotB - eps)
+        if overlapB and mergeOnOverlap
+            mergeIntoLast(true, buyTopNew, buyBotNew)
+        else
+            createNew(true, buyTopNew, buyBotNew, buyBoxColor)
+    else
+        createNew(true, buyTopNew, buyBotNew, buyBoxColor)
+
+if showSellBoxes and fireSell
+    if array.size(sellBoxes) > 0
+        box lastS = array.get(sellBoxes, array.size(sellBoxes) - 1)
+        float curTopS = box.get_top(lastS)
+        float curBotS = box.get_bottom(lastS)
+        bool overlapS = not(sellBotNew > curTopS + eps or sellTopNew < curBotS - eps)
+        if overlapS and mergeOnOverlap
+            mergeIntoLast(false, sellTopNew, sellBotNew)
+        else
+            createNew(false, sellTopNew, sellBotNew, sellBoxColor)
+    else
+        createNew(false, sellTopNew, sellBotNew, sellBoxColor)
+
+if showBuyBoxes and array.size(buyBoxes) > 0
+    int lastIdxB = array.size(buyBoxes) - 1
+    box.set_right(array.get(buyBoxes, lastIdxB), bar_index + extendBars)
+
+if showSellBoxes and array.size(sellBoxes) > 0
+    int lastIdxS = array.size(sellBoxes) - 1
+    box.set_right(array.get(sellBoxes, lastIdxS), bar_index + extendBars)
+
+alertcondition(rawBuy, 'Buy Pressure (cross)', 'Buy pressure detected!')
+alertcondition(rawSell, 'Sell Pressure (cross)', 'Sell pressure detected!')
