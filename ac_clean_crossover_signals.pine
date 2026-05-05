@@ -1,0 +1,174 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Alpha Council
+
+//@version=6
+indicator("Alpha Council - Clean Crossover", "AC - Crossover", overlay = false, max_lines_count = 500, max_labels_count = 500, max_polylines_count = 100, max_bars_back = 1000)
+
+// --- Inputs ---
+lengthInput      = input.int(400,    "Topological Window (Length)",    minval = 10, group = "Core Logic")
+lambdaInput      = input.float(1000, "Kinematic Smoothness (λ)",       minval = 1.0, group = "Core Logic")
+nwBandwidthInput = input.float(8.0,  "Gaussian Kernel Bandwidth (h)",  minval = 0.1, step=0.5, group = "Core Logic")
+itersInput       = input.int(10,     "Computation Iterations",         minval = 1,   maxval = 50,  group = "Core Logic")
+
+color SINE_COLOR = input.color(color.rgb(2, 181, 2), "Sine Wave (Green)", group = "Visuals")
+color LEAD_COLOR = input.color(#f23645, "Lead Sine Wave (Red)", group = "Visuals")
+
+// --- Math Functions ---
+solvePentadiagonal(array<float> b, array<float> d, array<float> c, array<float> f, int n, array<float> x) =>
+    var array<float> d_tmp = array.new_float(n)
+    var array<float> c_tmp = array.new_float(n)
+    var array<float> b_tmp = array.new_float(n)
+    for i = 0 to n - 1
+        d_tmp.set(i, d.get(i)), c_tmp.set(i, c.get(i)), b_tmp.set(i, b.get(i))
+    float r = c_tmp.get(0), s = c_tmp.get(1), t = f.get(0), xmult = 0.0
+    int l1 = n - 1, l2 = n - 2
+    for i = 1 to l2
+        float d_prev = d_tmp.get(i - 1)
+        xmult := r / d_prev
+        d_tmp.set(i, d_tmp.get(i) - xmult * c_tmp.get(i - 1))
+        c_tmp.set(i, c_tmp.get(i) - xmult * f.get(i - 1))
+        b_tmp.set(i, b_tmp.get(i) - xmult * b_tmp.get(i - 1))
+        xmult := t / d_prev
+        r     := s - xmult * c_tmp.get(i - 1)
+        d_tmp.set(i + 1, d_tmp.get(i + 1) - xmult * f.get(i - 1))
+        b_tmp.set(i + 1, b_tmp.get(i + 1) - xmult * b_tmp.get(i - 1))
+        if i < l2
+            s := c_tmp.get(i + 1), t := f.get(i)
+    xmult := r / d_tmp.get(l2)
+    d_tmp.set(l1, d_tmp.get(l1) - xmult * c_tmp.get(l2))
+    x.set(l1, (b_tmp.get(l1) - xmult * b_tmp.get(l2)) / d_tmp.get(l1))
+    x.set(l2, (b_tmp.get(l2) - c_tmp.get(l2) * x.get(l1)) / d_tmp.get(l2))
+    for i = n - 3 to 0 by 1
+        x.set(i, (b_tmp.get(i) - f.get(i) * x.get(i + 2) - c_tmp.get(i) * x.get(i + 1)) / d_tmp.get(i))
+
+whittakerALS(array<float> prices, array<float> d_base, array<float> c_base, array<float> f_base, int n, int iters, float p, array<float> z) =>
+    var array<float> weights = array.new_float(lengthInput, 1.0)
+    var array<float> b_curr  = array.new_float(lengthInput)
+    var array<float> d_curr  = array.new_float(lengthInput)
+    weights.fill(1.0)
+    for it = 1 to iters
+        for i = 0 to n - 1
+            float w = weights.get(i)
+            d_curr.set(i, d_base.get(i) + w)
+            b_curr.set(i, w * prices.get(i))
+        solvePentadiagonal(b_curr, d_curr, c_base, f_base, n, z)
+        for i = 0 to n - 1
+            weights.set(i, prices.get(i) > z.get(i) ? p : 1.0 - p)
+
+nadarayaWatson(array<float> src, int n, float h, array<float> out) =>
+    for i = 0 to n - 1
+        float sum_w = 0.0, sum_xw = 0.0
+        for j = 0 to n - 1
+            float diff = i - j
+            float weight = math.exp(-(diff * diff) / (2.0 * h * h))
+            sum_w += weight
+            sum_xw += src.get(j) * weight
+        out.set(i, sum_xw / sum_w)
+
+calc_atan2(float y, float x) =>
+    float res = 0.0
+    if x > 0.0
+        res := math.atan(y / x)
+    else if x < 0.0 and y >= 0.0
+        res := math.atan(y / x) + math.pi
+    else if x < 0.0 and y < 0.0
+        res := math.atan(y / x) - math.pi
+    else if x == 0.0 and y > 0.0
+        res := math.pi / 2.0
+    else if x == 0.0 and y < 0.0
+        res := -math.pi / 2.0
+    res
+
+// --- Structural Init ---
+var array<float> d_base = array.new_float(lengthInput)
+var array<float> c_base = array.new_float(lengthInput)
+var array<float> f_base = array.new_float(lengthInput)
+
+if barstate.isfirst
+    float k = lambdaInput
+    for i = 0 to lengthInput - 1
+        float di = 6.0 * k, ci = -4.0 * k, fi = k
+        if i == 0
+            di := k, ci := -2.0 * k
+        else if i == 1
+            di := 5.0 * k
+        else if i == lengthInput - 2
+            di := 5.0 * k, ci := -2.0 * k
+        else if i == lengthInput - 1
+            di := k, ci := 0.0, fi := 0.0
+        d_base.set(i, di), c_base.set(i, ci), f_base.set(i, fi)
+
+var array<float> arr_highs    = array.new_float(lengthInput)
+var array<float> arr_lows     = array.new_float(lengthInput)
+var array<float> arr_bodyTops = array.new_float(lengthInput)
+var array<float> arr_bodyBots = array.new_float(lengthInput)
+var array<float> arr_close    = array.new_float(lengthInput)
+
+// --- Execution ---
+if barstate.islast and bar_index >= lengthInput
+    for i = 0 to lengthInput - 1
+        arr_highs.set(i, high[i]), arr_lows.set(i, low[i])
+        arr_bodyTops.set(i, math.max(open[i], close[i])), arr_bodyBots.set(i, math.min(open[i], close[i]))
+        arr_close.set(i, close[i])
+
+    // Clear previous drawings
+    if polyline.all.size() > 0
+        for pl in polyline.all
+            polyline.delete(pl)
+    if label.all.size() > 0
+        for lb in label.all
+            label.delete(lb)
+
+    var array<float> zExtUp = array.new_float(lengthInput)
+    var array<float> zIntUp = array.new_float(lengthInput)
+    var array<float> zIntDn = array.new_float(lengthInput)
+    var array<float> zExtDn = array.new_float(lengthInput)
+    var array<float> zNW    = array.new_float(lengthInput)
+
+    whittakerALS(arr_highs,    d_base, c_base, f_base, lengthInput, itersInput, 0.999, zExtUp)
+    whittakerALS(arr_bodyTops, d_base, c_base, f_base, lengthInput, itersInput, 0.999, zIntUp)
+    whittakerALS(arr_bodyBots, d_base, c_base, f_base, lengthInput, itersInput, 0.001, zIntDn)
+    whittakerALS(arr_lows,     d_base, c_base, f_base, lengthInput, itersInput, 0.001, zExtDn)
+    nadarayaWatson(arr_close, lengthInput, nwBandwidthInput, zNW)
+
+    array<chart.point> sine_pts = array.new<chart.point>()
+    array<chart.point> lead_pts = array.new<chart.point>()
+
+    float prev_lead = na
+
+    for i = lengthInput - 1 to 0
+        int idx = bar_index - i
+        float v_eU  = zExtUp.get(i), float v_iU = zIntUp.get(i)
+        float v_iD  = zIntDn.get(i), float v_eD = zExtDn.get(i)
+        float v_mid = (v_eU + v_iU + v_iD + v_eD) / 4.0
+
+        float current_nw = zNW.get(i)
+        float prev_nw    = (i + 2 < lengthInput) ? zNW.get(i + 2) : current_nw
+        float iPhase     = current_nw - v_mid
+        float quad       = (current_nw - prev_nw) * 8.0
+        float phase      = calc_atan2(quad, iPhase)
+
+        float sine_val = math.sin(phase)
+        float lead_val = math.sin(phase + math.pi / 4.0)
+
+        sine_pts.push(chart.point.from_index(idx, sine_val))
+        lead_pts.push(chart.point.from_index(idx, lead_val))
+
+        // Buy: red line crosses zero from below (prev < 0, current >= 0)
+        if not na(prev_lead)
+            if prev_lead < 0.0 and lead_val >= 0.0
+                label.new(idx, -0.15, "▲\nBUY", style = label.style_none, textcolor = color.rgb(2, 181, 2), size = size.small, textalign = text.align_center)
+
+            // Sell: red line crosses zero from above (prev > 0, current <= 0)
+            else if prev_lead > 0.0 and lead_val <= 0.0
+                label.new(idx, 0.15, "SELL\n▼", style = label.style_none, textcolor = #f23645, size = size.small, textalign = text.align_center)
+
+        prev_lead := lead_val
+
+    polyline.new(sine_pts, line_color = SINE_COLOR, line_width = 2)
+    polyline.new(lead_pts, line_color = LEAD_COLOR, line_width = 2)
+
+// --- Horizontal Markers ---
+hline(0.0,  "Zero Line",  color = color.gray,                   linestyle = hline.style_solid)
+hline(0.9,  "Overbought", color = color.new(#f23645, 50), linestyle = hline.style_dotted)
+hline(-0.9, "Oversold",   color = color.new(#f23645, 50), linestyle = hline.style_dotted)
