@@ -1,0 +1,991 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+// Original Whittaker Concept: LuxAlgo
+// WESO, Web, Hilbert, DTW, HP & SG Hacks: THE ALPHA COUNCIL
+
+//@version=6
+indicator("Alpha Council - Non-Causality Suite", "Alpha Council - Non-Causal Suite", overlay = false, max_lines_count = 500, max_boxes_count = 500, max_labels_count = 500, max_polylines_count = 100, max_bars_back = 1000)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// THE CONSULTANT'S KINEMATIC PARAMETERS
+//---------------------------------------------------------------------------------------------------------------------{
+int   LENGTH_MIN    = 5
+float LAMBDA_MIN    = 0.1
+int   ITERS_MAX     = 50
+
+string SETTINGS_GRP = "Causal & Structural Settings"
+lengthInput         = input.int(400,    "Topological Window (Length)",    minval = LENGTH_MIN,    group = SETTINGS_GRP)
+lambdaInput         = input.float(1000, "Kinematic Smoothness (λ)",       minval = LAMBDA_MIN,    group = SETTINGS_GRP)
+pLowerInput         = input.float(0.001,"Lower Asymmetry Boundary (p)",   minval = 0.0, maxval = 0.5, step = 0.001, group = SETTINGS_GRP)
+pUpperInput         = input.float(0.999,"Upper Asymmetry Boundary (p)",   minval = 0.5, maxval = 1.0, step = 0.001, group = SETTINGS_GRP)
+webBandsInput       = input.int(4,      "Webbing Layers (Interpolations)",minval = 1,   maxval = 50, group = SETTINGS_GRP)
+
+string NW_GRP       = "Nadaraya-Watson Non-Causal Core"
+nwBandwidthInput    = input.float(8.0,  "Gaussian Kernel Bandwidth (h)",  minval = 0.1, step=0.5, group = NW_GRP)
+
+string MACRO_GRP    = "Macro & Polynomial Filters"
+hpEnable            = input.bool(true,  "Enable Hodrick-Prescott (HP) Filter", group = MACRO_GRP)
+hpLambda            = input.float(10000,"HP Filter Lambda (Macro Trend)", minval = 1.0, group = MACRO_GRP)
+sgEnable            = input.bool(true,  "Enable Savitzky-Golay (SG) Filter", group = MACRO_GRP)
+sgLength            = input.int(15,     "SG Filter Window (Must be odd)", step=2, minval=5, group = MACRO_GRP)
+
+string HMM_GRP      = "Baum-Welch HMM Regime"
+hmmEnable           = input.bool(true,  "Enable Non-Causal HMM Regime Ribbon", group = HMM_GRP)
+hmmBgEnable         = input.bool(true,  "Enable HMM Background Fill (Main Chart)", group = HMM_GRP)
+
+string WESO_GRP     = "WESO Oscillator Mechanics"
+emaLenInput         = input.int(5,      "Signal Line Smoothing (EMA)",    minval = 1,             group = WESO_GRP)
+slopeScaleInput     = input.float(8.0,  "Slope Gradient Multiplier",      minval = 1.0,           group = WESO_GRP)
+sqzThresholdInput   = input.float(0.4,  "Squeeze Compression Ratio",      minval = 0.1, step=0.1, group = WESO_GRP)
+
+string VOL_GRP      = "Microstructure Squeeze Mechanics"
+volLenInput         = input.int(20,     "Volume Z-Score Window",          minval = 2,                 group = VOL_GRP)
+volScaleInput       = input.float(0.35, "Volume Sensitivity Scale",       minval = 0.0, step = 0.05,  group = VOL_GRP)
+
+string HILBERT_GRP  = "Hilbert Transform (Phase Space)"
+hilbertEnable       = input.bool(true,  "Enable Hilbert Sine/Lead Wave",  group = HILBERT_GRP)
+
+string DTW_GRP      = "Dynamic Time Warping (Micro-Match)"
+dtwEnable           = input.bool(true,  "Enable DTW Fractal Twin Warp Vector", group = DTW_GRP)
+dtwTempLen          = input.int(10,     "DTW Template Size", minval = 3, maxval = 30, group = DTW_GRP)
+dtwProject          = input.bool(true,  "Project DTW Future Path", group = DTW_GRP, tooltip="Projects the historical outcome of the Fractal Twin forward from the current price.")
+
+string COMPUTE_GRP  = "Execution & Compute Limits"
+itersInput          = input.int(10,     "ALS Iterations (Brute-Force)",   minval = 1,   maxval = ITERS_MAX,  group = COMPUTE_GRP)
+extrapInput         = input.int(50,     "DTW Forward Projection Length",  minval = 0,   maxval = 500,        group = COMPUTE_GRP)
+
+string EXEC_GRP     = "Causal Execution Layer"
+useExec             = input.bool(true,  "Enable LTF Causal Triggers (CVD Divergence)", group = EXEC_GRP)
+execTf              = input.timeframe("1", "CVD Micro Timeframe (LTF)", group = EXEC_GRP)
+usePremExec         = input.bool(false, "Enable Premium Index Snap Trigger", group = EXEC_GRP)
+premTicker          = input.symbol("BINANCE:BTCUSDT_PREMIUM", "Premium Index Ticker", group = EXEC_GRP)
+premThreshold       = input.float(2.0,  "Premium Z-Score Threshold", minval = 0.1, group = EXEC_GRP)
+useOiExec           = input.bool(false, "Enable Open Interest Exhaustion Trigger", group = EXEC_GRP)
+oiTicker            = input.symbol("BINANCE:BTCUSDT.P_OI", "Open Interest Ticker", group = EXEC_GRP)
+useUsdtExec         = input.bool(false, "Enable Macro Capital Trigger (USDT.D)", group = EXEC_GRP)
+usdtTicker          = input.symbol("CRYPTOCAP:USDT.D", "Macro Capital Ticker", group = EXEC_GRP)
+usdtTf              = input.timeframe("1", "USDT.D Timeframe", group = EXEC_GRP)
+useVwapExec         = input.bool(false, "Enable Anchor-State VWAP Reclaim", group = EXEC_GRP)
+vwapTf              = input.timeframe("1", "VWAP Reclaim Timeframe", group = EXEC_GRP)
+
+string HUD_GRP      = "Tactical HUD"
+showHUD             = input.bool(true,  "Enable Signal Log HUD",   group = HUD_GRP)
+
+string VISUAL_GRP   = "Visual Customization"
+color SINE_COLOR    = input.color(color.black, "Sine Wave Color", group = VISUAL_GRP)
+color LEAD_COLOR    = input.color(#FF1744, "Lead Sine Wave Color", group = VISUAL_GRP)
+color DTW_COLOR     = input.color(#00BFFF, "DTW Warp Vector Color", group = VISUAL_GRP)
+color NW_COLOR      = input.color(#FFD700, "Nadaraya-Watson Attractor", group = VISUAL_GRP)
+color HP_COLOR      = input.color(color.white, "Hodrick-Prescott Line", group = VISUAL_GRP)
+color SG_COLOR      = input.color(#8A2BE2, "Savitzky-Golay Line", group = VISUAL_GRP)
+
+// Signature Institutional Colors
+color BULL_COLOR    = #089981
+color BEAR_COLOR    = #f23645
+color MID_COLOR     = color.gray
+
+// Reference Lines (Rendered globally in the subpane)
+hline(0.0,  "Midline (Zero)", color = color.gray, linestyle = hline.style_solid)
+hline(0.5,  "Overbought",     color = BEAR_COLOR, linestyle = hline.style_dashed)
+hline(-0.5, "Oversold",       color = BULL_COLOR, linestyle = hline.style_dashed)
+hline(0.95, "Lead Exhaustion Top", color = color.new(LEAD_COLOR, 50), linestyle = hline.style_dotted)
+hline(-0.95, "Lead Exhaustion Bot", color = color.new(LEAD_COLOR, 50), linestyle = hline.style_dotted)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// VOLUME Z-SCORE SHOCK & STATE-LOCK MECHANISM (REAL-TIME CAUSAL)
+//---------------------------------------------------------------------------------------------------------------------{
+
+float mean_20 = ta.sma(volume, volLenInput)
+float std_20  = ta.stdev(volume, volLenInput)
+
+float z_val = 0.0
+if std_20 != 0
+    z_val := (volume - mean_20) / std_20
+
+float z_smooth = ta.ema(z_val, emaLenInput)
+float vol_mapped = 0.8 + (z_smooth * volScaleInput)
+float vol_mod_clamped = math.max(0.3, math.min(1.5, vol_mapped))
+
+// Causal 24x Meta-Mean for State Locking
+float meta_mean_24 = ta.sma(close, 24)
+float meta_std_24  = ta.stdev(close, 24)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// HMM REGIME FEATURES & LTF CAUSAL ARRAYS (REAL-TIME CAUSAL)
+//---------------------------------------------------------------------------------------------------------------------{
+var float cvd = 0.0
+cvd += (close > open ? volume : (close < open ? -volume : 0))
+float rsi_val = ta.rsi(close, 14)
+[di_plus_val, di_minus_val, adx_val] = ta.dmi(14, 14)
+
+[cvd_c, cvd_o, cvd_v] = request.security(syminfo.tickerid, execTf, [close, open, volume], lookahead = barmerge.lookahead_off)
+var float ltf_cvd_cum = 0.0
+if not na(cvd_c)
+    ltf_cvd_cum += (cvd_c > cvd_o ? cvd_v : (cvd_c < cvd_o ? -cvd_v : 0))
+
+float prem_close     = request.security(premTicker, execTf, close, lookahead = barmerge.lookahead_off)
+float prem_mean      = ta.sma(prem_close, 24)
+float prem_std       = ta.stdev(prem_close, 24)
+float prem_z         = prem_std != 0 ? (prem_close - prem_mean) / prem_std : 0.0
+
+float ltf_oi_close   = request.security(oiTicker, execTf, close, lookahead = barmerge.lookahead_off)
+float ltf_usdt_close = request.security(usdtTicker, usdtTf, close, lookahead = barmerge.lookahead_off)
+
+[vwap_c, vwap_v, vwap_h3] = request.security(syminfo.tickerid, vwapTf, [close, volume, hlc3], lookahead = barmerge.lookahead_off)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// HUD METHOD DEFINITION
+//---------------------------------------------------------------------------------------------------------------------{
+method fill_hud_row(table t, int row, string title, color col, array<string> arr) =>
+    table.cell(t, 0, row, title, text_color = col, text_halign = text.align_left, bgcolor = color.new(color.black, 70))
+    int sz = array.size(arr)
+    for j = 1 to 5
+        string txt = "—"
+        if sz >= j
+            txt := array.get(arr, sz - j)
+        table.cell(t, j, row, txt, text_color = color.white, text_size = size.small, bgcolor = color.new(color.black, 70))
+
+//---------------------------------------------------------------------------------------------------------------------}
+// HEAVY MATRIX OPERATIONS (ANTI-OPTIMIZATION MANDATE)
+//---------------------------------------------------------------------------------------------------------------------{
+
+solvePentadiagonal(array<float> b, array<float> d, array<float> c, array<float> f, int n, array<float> x) =>
+    var array<float> d_tmp = array.new_float(n)
+    var array<float> c_tmp = array.new_float(n)
+    var array<float> b_tmp = array.new_float(n)
+    
+    for i = 0 to n - 1
+        d_tmp.set(i, d.get(i)), c_tmp.set(i, c.get(i)), b_tmp.set(i, b.get(i))
+
+    float r = c_tmp.get(0), s = c_tmp.get(1), t = f.get(0), xmult = 0.0
+    int l1 = n - 1, l2 = n - 2
+
+    for i = 1 to l2
+        float d_prev = d_tmp.get(i - 1)
+        xmult := r / d_prev
+        d_tmp.set(i, d_tmp.get(i) - xmult * c_tmp.get(i - 1))
+        c_tmp.set(i, c_tmp.get(i) - xmult * f.get(i - 1))
+        b_tmp.set(i, b_tmp.get(i) - xmult * b_tmp.get(i - 1))
+        xmult := t / d_prev
+        r     := s - xmult * c_tmp.get(i - 1)
+        d_tmp.set(i + 1, d_tmp.get(i + 1) - xmult * f.get(i - 1))
+        b_tmp.set(i + 1, b_tmp.get(i + 1) - xmult * b_tmp.get(i - 1))
+        if i < l2
+            s := c_tmp.get(i + 1), t := f.get(i)
+        
+    xmult := r / d_tmp.get(l2)
+    d_tmp.set(l1, d_tmp.get(l1) - xmult * c_tmp.get(l2))
+    x.set(l1, (b_tmp.get(l1) - xmult * b_tmp.get(l2)) / d_tmp.get(l1))
+    x.set(l2, (b_tmp.get(l2) - c_tmp.get(l2) * x.get(l1)) / d_tmp.get(l2))
+    
+    for i = n - 3 to 0 by 1
+        x.set(i, (b_tmp.get(i) - f.get(i) * x.get(i + 2) - c_tmp.get(i) * x.get(i + 1)) / d_tmp.get(i))
+
+whittakerALS(array<float> prices, array<float> d_base, array<float> c_base, array<float> f_base, int n, int iters, float p, array<float> z) =>
+    var array<float> weights = array.new_float(lengthInput, 1.0)
+    var array<float> b_curr  = array.new_float(lengthInput)
+    var array<float> d_curr  = array.new_float(lengthInput)
+    weights.fill(1.0)
+    
+    for it = 1 to iters
+        for i = 0 to n - 1
+            float w = weights.get(i)
+            d_curr.set(i, d_base.get(i) + w)
+            b_curr.set(i, w * prices.get(i))
+        solvePentadiagonal(b_curr, d_curr, c_base, f_base, n, z)
+        for i = 0 to n - 1
+            weights.set(i, prices.get(i) > z.get(i) ? p : 1.0 - p)
+
+nadarayaWatson(array<float> src, int n, float h, array<float> out) =>
+    for i = 0 to n - 1
+        float sum_w = 0.0, sum_xw = 0.0
+        for j = 0 to n - 1
+            float diff = i - j
+            float weight = math.exp(-(diff * diff) / (2.0 * h * h))
+            sum_w += weight
+            sum_xw += src.get(j) * weight
+        out.set(i, sum_xw / sum_w)
+
+// Dynamic Non-Causal Savitzky-Golay Filter (Quadratic/Cubic Gram Polynomials)
+sgFilter(array<float> src, int n, int m, array<float> out) =>
+    for i = 0 to n - 1
+        float sum_val = 0.0
+        float sum_w = 0.0
+        for j = -m to m
+            int idx = i + j
+            if idx >= 0 and idx < n
+                float w = 3.0 * (3.0 * m * m + 3.0 * m - 1.0 - 5.0 * j * j)
+                sum_val += src.get(idx) * w
+                sum_w += w
+        out.set(i, sum_val / sum_w)
+
+calc_atan2(float y, float x) =>
+    float res = 0.0
+    if x > 0.0
+        res := math.atan(y / x)
+    else if x < 0.0 and y >= 0.0
+        res := math.atan(y / x) + math.pi
+    else if x < 0.0 and y < 0.0
+        res := math.atan(y / x) - math.pi
+    else if x == 0.0 and y > 0.0
+        res := math.pi / 2.0
+    else if x == 0.0 and y < 0.0
+        res := -math.pi / 2.0
+    res
+
+//---------------------------------------------------------------------------------------------------------------------}
+// STRUCTURAL INITIALIZATION & KINEMATIC MEMORY
+//---------------------------------------------------------------------------------------------------------------------{
+
+var array<float> d_base = array.new_float(lengthInput)
+var array<float> c_base = array.new_float(lengthInput)
+var array<float> f_base = array.new_float(lengthInput)
+
+var array<float> d_hp = array.new_float(lengthInput)
+var array<float> c_hp = array.new_float(lengthInput)
+var array<float> f_hp = array.new_float(lengthInput)
+
+if barstate.isfirst
+    float k = lambdaInput
+    float k_hp = hpLambda
+    for i = 0 to lengthInput - 1
+        float di = 6.0 * k, ci = -4.0 * k, fi = k
+        float di_hp = 1.0 + 6.0 * k_hp, ci_hp = -4.0 * k_hp, fi_hp = k_hp
+        
+        if i == 0
+            di := k, ci := -2.0 * k
+            di_hp := 1.0 + k_hp, ci_hp := -2.0 * k_hp
+        else if i == 1
+            di := 5.0 * k
+            di_hp := 1.0 + 5.0 * k_hp
+        else if i == lengthInput - 2
+            di := 5.0 * k, ci := -2.0 * k
+            di_hp := 1.0 + 5.0 * k_hp, ci_hp := -2.0 * k_hp
+        else if i == lengthInput - 1
+            di := k, ci := 0.0, fi := 0.0
+            di_hp := 1.0 + k_hp, ci_hp := 0.0, fi_hp := 0.0
+            
+        d_base.set(i, di), c_base.set(i, ci), f_base.set(i, fi)
+        d_hp.set(i, di_hp), c_hp.set(i, ci_hp), f_hp.set(i, fi_hp)
+
+var array<float> arr_highs     = array.new_float(lengthInput)
+var array<float> arr_bodyTops  = array.new_float(lengthInput)
+var array<float> arr_bodyBots  = array.new_float(lengthInput)
+var array<float> arr_lows      = array.new_float(lengthInput)
+var array<float> arr_close     = array.new_float(lengthInput)
+var array<float> arr_volMods   = array.new_float(lengthInput)
+var array<float> arr_cvd       = array.new_float(lengthInput)
+var array<float> arr_rsi       = array.new_float(lengthInput)
+var array<float> arr_adx       = array.new_float(lengthInput)
+var array<float> arr_diplus    = array.new_float(lengthInput)
+var array<float> arr_diminus   = array.new_float(lengthInput)
+var array<float> arr_vwap_c    = array.new_float(lengthInput)
+var array<float> arr_vwap_v    = array.new_float(lengthInput)
+var array<float> arr_vwap_h3   = array.new_float(lengthInput)
+var array<float> arr_ltf_cvd   = array.new_float(lengthInput)
+var array<float> arr_prem_z    = array.new_float(lengthInput)
+var array<float> arr_ltf_oi    = array.new_float(lengthInput)
+var array<float> arr_ltf_usdt  = array.new_float(lengthInput)
+
+var array<float> arr_meta_mean = array.new_float(lengthInput)
+var array<float> arr_meta_std  = array.new_float(lengthInput)
+
+var table hud = table.new(position.top_right, 5, 6, bgcolor = color.new(color.black, 80), border_color = color.new(color.gray, 60), border_width = 1, frame_color = color.new(color.gray, 60), frame_width = 1)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// MAIN SKELETON EXTRACTION & WESO GENERATION (REPAINTING ARCHITECTURE)
+//---------------------------------------------------------------------------------------------------------------------{
+
+if barstate.islast and bar_index >= lengthInput
+    for i = 0 to lengthInput - 1
+        arr_highs.set(i, high[i]), arr_lows.set(i, low[i])
+        arr_bodyTops.set(i, math.max(open[i], close[i])), arr_bodyBots.set(i, math.min(open[i], close[i]))
+        arr_close.set(i, close[i]), arr_volMods.set(i, vol_mod_clamped[i])
+        arr_cvd.set(i, cvd[i]), arr_rsi.set(i, rsi_val[i]), arr_adx.set(i, adx_val[i])
+        arr_diplus.set(i, di_plus_val[i]), arr_diminus.set(i, di_minus_val[i])
+        arr_meta_mean.set(i, meta_mean_24[i])
+        arr_meta_std.set(i, meta_std_24[i])
+        arr_vwap_c.set(i, vwap_c[i])
+        arr_vwap_v.set(i, vwap_v[i])
+        arr_vwap_h3.set(i, vwap_h3[i])
+        arr_ltf_cvd.set(i, ltf_cvd_cum[i])
+        arr_prem_z.set(i, prem_z[i])
+        arr_ltf_oi.set(i, ltf_oi_close[i])
+        arr_ltf_usdt.set(i, ltf_usdt_close[i])
+    
+    if line.all.size() > 0
+        for l in line.all
+            line.delete(l)
+    if box.all.size() > 0
+        for bx in box.all
+            box.delete(bx)
+    if label.all.size() > 0
+        for lb in label.all
+            label.delete(lb)
+    if polyline.all.size() > 0
+        for pl in polyline.all
+            polyline.delete(pl)
+            
+    float global_max_h   = array.max(arr_highs)
+    float global_min_l   = array.min(arr_lows)
+    float global_chart_h = math.max(global_max_h - global_min_l, global_min_l * 0.01)
+    float stack_offset   = global_chart_h * 0.08
+        
+    var array<float> zExtUp = array.new_float(lengthInput)
+    var array<float> zIntUp = array.new_float(lengthInput)
+    var array<float> zIntDn = array.new_float(lengthInput)
+    var array<float> zExtDn = array.new_float(lengthInput)
+    var array<float> zNW    = array.new_float(lengthInput)
+    var array<float> zHP    = array.new_float(lengthInput)
+    var array<float> zSG    = array.new_float(lengthInput)
+        
+    whittakerALS(arr_highs,    d_base, c_base, f_base, lengthInput, itersInput, pUpperInput, zExtUp)
+    whittakerALS(arr_bodyTops, d_base, c_base, f_base, lengthInput, itersInput, pUpperInput, zIntUp)
+    whittakerALS(arr_bodyBots, d_base, c_base, f_base, lengthInput, itersInput, pLowerInput, zIntDn)
+    whittakerALS(arr_lows,     d_base, c_base, f_base, lengthInput, itersInput, pLowerInput, zExtDn)
+    
+    nadarayaWatson(arr_close, lengthInput, nwBandwidthInput, zNW)
+    
+    if hpEnable
+        solvePentadiagonal(arr_close, d_hp, c_hp, f_hp, lengthInput, zHP)
+        
+    if sgEnable
+        int m_sg = math.max(1, math.floor(sgLength / 2))
+        sgFilter(arr_close, lengthInput, m_sg, zSG)
+        
+    var array<float> zRegime = array.new_float(lengthInput)
+    if hmmEnable
+        for i = 0 to lengthInput - 1
+            float current_hp = hpEnable ? zHP.get(i) : 0.0
+            float prev_hp    = hpEnable ? ((i + 1 < lengthInput) ? zHP.get(i + 1) : current_hp) : 0.0
+            float hp_slope   = current_hp - prev_hp
+            
+            float current_nw = zNW.get(i)
+            float prev_nw    = (i + 1 < lengthInput) ? zNW.get(i + 1) : current_nw
+            float val_mid = (zExtUp.get(i) + zIntUp.get(i) + zIntDn.get(i) + zExtDn.get(i)) / 4.0
+            float iPhase = current_nw - val_mid
+            float quad   = (current_nw - prev_nw) * 8.0
+            float phase  = calc_atan2(quad, iPhase)
+            
+            float cvd_delta = (i + 1 < lengthInput) ? (arr_cvd.get(i) - arr_cvd.get(i+1)) : 0.0
+            float rsi = arr_rsi.get(i)
+            float adx = arr_adx.get(i)
+            float dip = arr_diplus.get(i)
+            float dim = arr_diminus.get(i)
+            
+            float e_bull = (rsi > 50 ? 1.0 : 0.0) + (dip > dim and adx > 20 ? 1.0 : 0.0) + (cvd_delta > 0 ? 1.0 : 0.0) + (hp_slope > 0 ? 1.0 : 0.0) + (math.sin(phase) > 0 ? 1.0 : 0.0)
+            float e_bear = (rsi < 50 ? 1.0 : 0.0) + (dim > dip and adx > 20 ? 1.0 : 0.0) + (cvd_delta < 0 ? 1.0 : 0.0) + (hp_slope < 0 ? 1.0 : 0.0) + (math.sin(phase) < 0 ? 1.0 : 0.0)
+            
+            float raw_state = e_bull > e_bear and e_bull >= 3 ? 1.0 : (e_bear > e_bull and e_bear >= 3 ? -1.0 : 0.0)
+            zRegime.set(i, raw_state)
+            
+    array<chart.point> weso_pts = array.new<chart.point>()
+    array<chart.point> sine_pts = array.new<chart.point>()
+    array<chart.point> lead_pts = array.new<chart.point>()
+    
+    // HUD Consolidated Event Log Vectors
+    array<int>    log_bars  = array.new<int>()
+    array<string> log_types = array.new<string>()
+    array<string> log_times = array.new<string>()
+    array<string> log_zs    = array.new<string>()
+    array<string> log_confs = array.new<string>()
+    array<color>  log_cols  = array.new<color>()
+    
+    float alpha = 2.0 / (emaLenInput + 1.0)
+    float prev_ema = na
+    float val_prev = na
+    
+    int   active_regime = 0
+    float track_weso    = na
+    float track_eU      = na
+    float track_eD      = na
+    int   track_idx     = na
+    float track_sine    = na
+    float track_lead    = na
+
+    // Causal Execution Arming States (CVD)
+    float last_armed_price_short     = na
+    float last_armed_cvd_short       = na
+    float last_armed_price_long      = na
+    float last_armed_cvd_long        = na
+    bool  trig_cvd_short             = false
+    bool  trig_cvd_long              = false
+    
+    // Causal Execution Arming States (OI)
+    float last_armed_price_short_oi  = na
+    float last_armed_oi_short        = na
+    float last_armed_price_long_oi   = na
+    float last_armed_oi_long         = na
+    bool  trig_oi_short              = false
+    bool  trig_oi_long               = false
+
+    // Causal Execution Arming States (USDT.D)
+    float last_armed_price_short_usdt = na
+    float last_armed_usdt_short       = na
+    float last_armed_price_long_usdt  = na
+    float last_armed_usdt_long        = na
+    bool  trig_usdt_short             = false
+    bool  trig_usdt_long              = false
+
+    // Causal Execution Arming States (VWAP)
+    float cum_vol_short     = 0.0
+    float cum_tp_vol_short  = 0.0
+    float cum_vol_long      = 0.0
+    float cum_tp_vol_long   = 0.0
+    bool  was_armed_short   = false
+    bool  was_armed_long    = false
+    bool  trig_vwap_short   = false
+    bool  trig_vwap_long    = false
+    float prev_ltf_c        = na
+    float prev_vwap_short   = na
+    float prev_vwap_long    = na
+
+    // Causal Execution Arming States (Premium)
+    bool  trig_prem_short = false
+    bool  trig_prem_long  = false
+
+    // Dynamic 3-Bar Execution Stacking Variables
+    int running_top_stack = 0
+    int last_top_idx      = -10
+    int running_bot_stack = 0
+    int last_bot_idx      = -10
+
+    // Assemble Historical Trajectories
+    for i = lengthInput - 1 to 0
+        int idx = bar_index - i
+        
+        if idx - last_top_idx > 3
+            running_top_stack := 0
+        if idx - last_bot_idx > 3
+            running_bot_stack := 0
+            
+        float val_eU = zExtUp.get(i), float val_iU = zIntUp.get(i)
+        float val_iD = zIntDn.get(i), float val_eD = zExtDn.get(i)
+        float val_c  = arr_close.get(i)
+        
+        float val_mid = (val_eU + val_iU + val_iD + val_eD) / 4.0
+        float envWidth = val_eU - val_eD
+        float bandWidth = val_iU - val_iD
+        float spreadRatio = math.max(0.0, math.min(1.0, bandWidth / envWidth))
+        float halfEnv = envWidth / 2.0
+        float pricePos = math.max(-1.0, math.min(1.0, (val_c - val_mid) / halfEnv))
+        float weso_val = pricePos * (0.3 + 0.7 * spreadRatio)
+        
+        if na(prev_ema)
+            prev_ema := weso_val
+        else
+            prev_ema := alpha * weso_val + (1.0 - alpha) * prev_ema
+            
+        weso_pts.push(chart.point.from_index(idx, weso_val))
+        
+        // HP/SG Signal Dimming Gates
+        float current_hp = hpEnable ? zHP.get(i) : 0.0
+        float prev_hp    = hpEnable ? ((i + 1 < lengthInput) ? zHP.get(i + 1) : current_hp) : 0.0
+        float hp_slope   = current_hp - prev_hp
+        
+        float current_sg = sgEnable ? zSG.get(i) : 0.0
+        float prev_sg    = sgEnable ? ((i + 1 < lengthInput) ? zSG.get(i + 1) : current_sg) : 0.0
+        float sg_slope   = current_sg - prev_sg
+        
+        bool hp_bull = not hpEnable or hp_slope >= 0
+        bool hp_bear = not hpEnable or hp_slope <= 0
+        bool sg_bull = not sgEnable or sg_slope >= 0
+        bool sg_bear = not sgEnable or sg_slope <= 0
+        
+        int transp_bull = hp_bull ? (sg_bull ? 0 : 50) : 85
+        int transp_bear = hp_bear ? (sg_bear ? 0 : 50) : 85
+        
+        if not na(track_weso)
+            if track_weso < 0.5 and track_weso > -0.5
+                active_regime := 0
+            if track_weso >= 0.5 and active_regime != -1
+                if val_eU <= track_eU or weso_val < track_weso
+                    int tr_i = bar_index - track_idx
+                    float tr_hp_slope = hpEnable ? (zHP.get(tr_i) - (tr_i + 1 < lengthInput ? zHP.get(tr_i + 1) : zHP.get(tr_i))) : 0.0
+                    float tr_sg_slope = sgEnable ? (zSG.get(tr_i) - (tr_i + 1 < lengthInput ? zSG.get(tr_i + 1) : zSG.get(tr_i))) : 0.0
+                    bool tr_hp_bear = not hpEnable or tr_hp_slope <= 0
+                    bool tr_sg_bear = not sgEnable or tr_sg_slope <= 0
+                    int tr_transp_bear = tr_hp_bear ? (tr_sg_bear ? 0 : 50) : 85
+                    int conf_bear = tr_transp_bear == 0 ? 100 : (tr_transp_bear == 50 ? 50 : 15)
+                    
+                    float tr_val_c = arr_close.get(tr_i)
+                    float tr_hist_mean = arr_meta_mean.get(tr_i)
+                    float tr_hist_std  = arr_meta_std.get(tr_i)
+                    float tr_z_score   = tr_hist_std != 0 ? (tr_val_c - tr_hist_mean) / tr_hist_std : 0.0
+                    
+                    string z_str = (tr_z_score > 0 ? "+" : "") + str.tostring(tr_z_score, "#.##")
+                    
+                    log_bars.push(track_idx)
+                    log_types.push("WESO Top ▼")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[tr_i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bear) + "%")
+                    log_cols.push(BEAR_COLOR)
+                    
+                    string tooltip_top = "Whittaker Kinematic Top\nAlignment: " + (tr_transp_bear == 0 ? "Solid (Passes HP & SG)" : (tr_transp_bear == 50 ? "Dim (Passes HP)" : "Dimmest (Fails Macro)")) + "\nLocked Anchor Z-Score: " + z_str
+                    label.new(track_idx, na, text = "▼", yloc = yloc.abovebar, style = label.style_none, textcolor = color.new(BEAR_COLOR, tr_transp_bear), size = size.small, tooltip=tooltip_top, force_overlay = true)
+                    active_regime := -1
+                    
+            if track_weso <= -0.5 and active_regime != 1
+                if val_eD >= track_eD or weso_val > track_weso
+                    int tr_i = bar_index - track_idx
+                    float tr_hp_slope = hpEnable ? (zHP.get(tr_i) - (tr_i + 1 < lengthInput ? zHP.get(tr_i + 1) : zHP.get(tr_i))) : 0.0
+                    float tr_sg_slope = sgEnable ? (zSG.get(tr_i) - (tr_i + 1 < lengthInput ? zSG.get(tr_i + 1) : zSG.get(tr_i))) : 0.0
+                    bool tr_hp_bull = not hpEnable or tr_hp_slope >= 0
+                    bool tr_sg_bull = not sgEnable or tr_sg_slope >= 0
+                    int tr_transp_bull = tr_hp_bull ? (tr_sg_bull ? 0 : 50) : 85
+                    int conf_bull = tr_transp_bull == 0 ? 100 : (tr_transp_bull == 50 ? 50 : 15)
+                    
+                    float tr_val_c = arr_close.get(tr_i)
+                    float tr_hist_mean = arr_meta_mean.get(tr_i)
+                    float tr_hist_std  = arr_meta_std.get(tr_i)
+                    float tr_z_score   = tr_hist_std != 0 ? (tr_val_c - tr_hist_mean) / tr_hist_std : 0.0
+                    
+                    string z_str = (tr_z_score > 0 ? "+" : "") + str.tostring(tr_z_score, "#.##")
+                    
+                    log_bars.push(track_idx)
+                    log_types.push("WESO Bot ▲")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[tr_i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bull) + "%")
+                    log_cols.push(BULL_COLOR)
+                    
+                    string tooltip_bot = "Whittaker Kinematic Bottom\nAlignment: " + (tr_transp_bull == 0 ? "Solid (Passes HP & SG)" : (tr_transp_bull == 50 ? "Dim (Passes HP)" : "Dimmest (Fails Macro)")) + "\nLocked Anchor Z-Score: " + z_str
+                    label.new(track_idx, na, text = "▲", yloc = yloc.belowbar, style = label.style_none, textcolor = color.new(BULL_COLOR, tr_transp_bull), size = size.small, tooltip=tooltip_bot, force_overlay = true)
+                    active_regime := 1
+                    
+        track_weso := weso_val, track_eU  := val_eU, track_eD  := val_eD, track_idx := idx
+
+        float slope = 0.0
+        if not na(val_prev)
+            slope := prev_ema - val_prev
+        val_prev := prev_ema
+
+        // NOTE: Histogram bars (hist_bull_acc, hist_bull_dec, hist_bear_acc, hist_bear_dec) REMOVED
+
+        // Subpane WESO Squeeze Dots
+        if i < 250
+            color dot_col = spreadRatio < sqzThresholdInput ? BEAR_COLOR : BULL_COLOR
+            label.new(x = idx, y = 0.0, text = "•", style = label.style_none, textcolor = dot_col, textalign = text.align_center, tooltip="WESO Squeeze Compression")
+
+        float hist_mean = arr_meta_mean.get(i)
+        float hist_std  = arr_meta_std.get(i)
+
+        if hilbertEnable
+            float current_nw = zNW.get(i)
+            float prev_nw    = (i + 2 < lengthInput) ? zNW.get(i + 2) : current_nw
+            float iPhase = current_nw - val_mid
+            float quad   = (current_nw - prev_nw) * 8.0 
+            float phase  = calc_atan2(quad, iPhase)
+            
+            float sine_val = math.sin(phase)
+            float lead_val = math.sin(phase + math.pi / 4.0)
+            
+            float z_score   = hist_std != 0 ? (val_c - hist_mean) / hist_std : 0.0
+            string z_str    = (z_score > 0 ? "+" : "") + str.tostring(z_score, "#.##")
+            
+            int conf_bull_curr = transp_bull == 0 ? 100 : (transp_bull == 50 ? 50 : 15)
+            int conf_bear_curr = transp_bear == 0 ? 100 : (transp_bear == 50 ? 50 : 15)
+            
+            if not na(track_sine) and not na(track_lead)
+                if track_sine <= track_lead and sine_val > lead_val
+                    log_bars.push(idx)
+                    log_types.push("Phase Bull ◆")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bull_curr) + "%")
+                    log_cols.push(#00FFFF)
+                    
+                    string tt_phase_bull = "Hilbert Phase Shift: Bullish\nAlignment: " + (transp_bull == 0 ? "Solid (Passes All)" : (transp_bull == 50 ? "Dim (Passes HP)" : "Dimmest (Fails All)")) + "\nLocked Anchor Z-Score: " + z_str
+                    label.new(idx, na, text = "◆", yloc = yloc.belowbar, style = label.style_none, textcolor = color.new(#00FFFF, transp_bull), size = size.small, tooltip=tt_phase_bull, force_overlay = true)
+                else if track_sine >= track_lead and sine_val < lead_val
+                    log_bars.push(idx)
+                    log_types.push("Phase Bear ◆")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bear_curr) + "%")
+                    log_cols.push(#FF00FF)
+                    
+                    string tt_phase_bear = "Hilbert Phase Shift: Bearish\nAlignment: " + (transp_bear == 0 ? "Solid (Passes All)" : (transp_bear == 50 ? "Dim (Passes HP)" : "Dimmest (Fails All)")) + "\nLocked Anchor Z-Score: " + z_str
+                    label.new(idx, na, text = "◆", yloc = yloc.abovebar, style = label.style_none, textcolor = color.new(#FF00FF, transp_bear), size = size.small, tooltip=tt_phase_bear, force_overlay = true)
+                
+                if track_lead < 0.95 and lead_val >= 0.95
+                    log_bars.push(idx)
+                    log_types.push("Exhaust Top ★")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bear_curr) + "%")
+                    log_cols.push(color.white)
+                    
+                    string txt_ex_top = "Lead Sine Exhaustion (Top)\nLocked Anchor Z-Score: " + z_str
+                    label.new(idx, na, text = "★", yloc = yloc.abovebar, style = label.style_none, textcolor = color.black, size = size.small, tooltip=txt_ex_top, force_overlay = true)
+                else if track_lead > -0.95 and lead_val <= -0.95
+                    log_bars.push(idx)
+                    log_types.push("Exhaust Bot ★")
+                    log_times.push(str.format("{0,date,MM/dd HH:mm}", time[i]))
+                    log_zs.push(z_str)
+                    log_confs.push(str.tostring(conf_bull_curr) + "%")
+                    log_cols.push(color.white)
+                    
+                    string txt_ex_bot = "Lead Sine Exhaustion (Bottom)\nLocked Anchor Z-Score: " + z_str
+                    label.new(idx, na, text = "★", yloc = yloc.belowbar, style = label.style_none, textcolor = color.black, size = size.small, tooltip=txt_ex_bot, force_overlay = true)
+            
+            track_sine := sine_val
+            track_lead := lead_val
+            
+            sine_pts.push(chart.point.from_index(idx, sine_val))
+            lead_pts.push(chart.point.from_index(idx, lead_val))
+
+        // -----------------------------------------------------------------------------------------
+        // CAUSAL EXECUTION TRIGGERS
+        // -----------------------------------------------------------------------------------------
+        bool is_armed_short_global = val_c > hist_mean + (hist_std * 1.5)
+        bool is_armed_long_global  = val_c < hist_mean - (hist_std * 1.5)
+
+        // 1. CVD Divergence Trigger
+        if useExec
+            float curr_ltf_cvd  = arr_ltf_cvd.get(i)
+            
+            if is_armed_short_global
+                if na(last_armed_price_short) or val_c > last_armed_price_short
+                    if not na(last_armed_cvd_short) and curr_ltf_cvd < last_armed_cvd_short and not trig_cvd_short
+                        float y_pos = arr_highs.get(i) + (running_top_stack * stack_offset)
+                        label.new(idx, y_pos, "C\nV\nD\n▼", color=color.new(BEAR_COLOR, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="Micro-CVD Absorption Divergence\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_top_stack += 1
+                        last_top_idx := idx
+                        trig_cvd_short := true
+                    last_armed_price_short := val_c
+                    last_armed_cvd_short := curr_ltf_cvd
+            else
+                last_armed_price_short := na
+                last_armed_cvd_short := na
+                trig_cvd_short := false
+                
+            if is_armed_long_global
+                if na(last_armed_price_long) or val_c < last_armed_price_long
+                    if not na(last_armed_cvd_long) and curr_ltf_cvd > last_armed_cvd_long and not trig_cvd_long
+                        float y_pos = arr_lows.get(i) - (running_bot_stack * stack_offset)
+                        label.new(idx, y_pos, "C\nV\nD\n▲", color=color.new(BULL_COLOR, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="Micro-CVD Absorption Divergence\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_bot_stack += 1
+                        last_bot_idx := idx
+                        trig_cvd_long := true
+                    last_armed_price_long := val_c
+                    last_armed_cvd_long := curr_ltf_cvd
+            else
+                last_armed_price_long := na
+                last_armed_cvd_long := na
+                trig_cvd_long := false
+                
+        // 2. Premium Index Snap Trigger
+        if usePremExec
+            float curr_prem_z = arr_prem_z.get(i)
+            float prev_prem_z = i + 1 < lengthInput ? arr_prem_z.get(i + 1) : curr_prem_z
+            
+            if is_armed_short_global
+                if prev_prem_z > premThreshold and curr_prem_z <= premThreshold and not trig_prem_short
+                    float y_pos = arr_highs.get(i) + (running_top_stack * stack_offset)
+                    label.new(idx, y_pos, "P\nR\nE\nM\n▼", color=color.new(BEAR_COLOR, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="Premium Index Snap (Greed Unwind)\nArmed by Non-Causal Boundary", force_overlay = true)
+                    running_top_stack += 1
+                    last_top_idx := idx
+                    trig_prem_short := true
+            else
+                trig_prem_short := false
+                
+            if is_armed_long_global
+                if prev_prem_z < -premThreshold and curr_prem_z >= -premThreshold and not trig_prem_long
+                    float y_pos = arr_lows.get(i) - (running_bot_stack * stack_offset)
+                    label.new(idx, y_pos, "P\nR\nE\nM\n▲", color=color.new(BULL_COLOR, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="Premium Index Snap (Fear Unwind)\nArmed by Non-Causal Boundary", force_overlay = true)
+                    running_bot_stack += 1
+                    last_bot_idx := idx
+                    trig_prem_long := true
+            else
+                trig_prem_long := false
+
+        // 3. Open Interest Exhaustion Trigger
+        if useOiExec
+            float curr_ltf_oi  = arr_ltf_oi.get(i)
+            
+            if is_armed_short_global
+                if na(last_armed_price_short_oi) or val_c > last_armed_price_short_oi
+                    if not na(last_armed_oi_short) and curr_ltf_oi < last_armed_oi_short and not trig_oi_short
+                        float y_pos = arr_highs.get(i) + (running_top_stack * stack_offset)
+                        label.new(idx, y_pos, "O\nI\n▼", color=color.new(BEAR_COLOR, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="Open Interest Exhaustion (Short)\nLiquidity Engine Failure", force_overlay = true)
+                        running_top_stack += 1
+                        last_top_idx := idx
+                        trig_oi_short := true
+                    last_armed_price_short_oi := val_c
+                    last_armed_oi_short := curr_ltf_oi
+            else
+                last_armed_price_short_oi := na
+                last_armed_oi_short := na
+                trig_oi_short := false
+                
+            if is_armed_long_global
+                if na(last_armed_price_long_oi) or val_c < last_armed_price_long_oi
+                    if not na(last_armed_oi_long) and curr_ltf_oi < last_armed_oi_long and not trig_oi_long
+                        float y_pos = arr_lows.get(i) - (running_bot_stack * stack_offset)
+                        label.new(idx, y_pos, "O\nI\n▲", color=color.new(BULL_COLOR, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="Open Interest Exhaustion (Long)\nLiquidity Engine Failure", force_overlay = true)
+                        running_bot_stack += 1
+                        last_bot_idx := idx
+                        trig_oi_long := true
+                    last_armed_price_long_oi := val_c
+                    last_armed_oi_long := curr_ltf_oi
+            else
+                last_armed_price_long_oi := na
+                last_armed_oi_long := na
+                trig_oi_long := false
+
+        // 4. Macro Capital Fracture (USDT.D)
+        if useUsdtExec
+            float curr_ltf_usdt = arr_ltf_usdt.get(i)
+            
+            if is_armed_short_global
+                if na(last_armed_price_short_usdt) or val_c > last_armed_price_short_usdt
+                    if not na(last_armed_usdt_short) and curr_ltf_usdt >= last_armed_usdt_short and not trig_usdt_short
+                        float y_pos = arr_highs.get(i) + (running_top_stack * stack_offset)
+                        label.new(idx, y_pos, "U\nS\nD\nT\n▼", color=color.new(BEAR_COLOR, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="Macro Capital Fracture (USDT.D)\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_top_stack += 1
+                        last_top_idx := idx
+                        trig_usdt_short := true
+                    last_armed_price_short_usdt := val_c
+                    last_armed_usdt_short := curr_ltf_usdt
+            else
+                last_armed_price_short_usdt := na
+                last_armed_usdt_short := na
+                trig_usdt_short := false
+                
+            if is_armed_long_global
+                if na(last_armed_price_long_usdt) or val_c < last_armed_price_long_usdt
+                    if not na(last_armed_usdt_long) and curr_ltf_usdt <= last_armed_usdt_long and not trig_usdt_long
+                        float y_pos = arr_lows.get(i) - (running_bot_stack * stack_offset)
+                        label.new(idx, y_pos, "U\nS\nD\nT\n▲", color=color.new(BULL_COLOR, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="Macro Capital Fracture (USDT.D)\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_bot_stack += 1
+                        last_bot_idx := idx
+                        trig_usdt_long := true
+                    last_armed_price_long_usdt := val_c
+                    last_armed_usdt_long := curr_ltf_usdt
+            else
+                last_armed_price_long_usdt := na
+                last_armed_usdt_long := na
+                trig_usdt_long := false
+
+        // 5. Anchor-State VWAP Reclaim
+        if useVwapExec
+            float curr_ltf_v  = arr_vwap_v.get(i)
+            float curr_ltf_h3 = arr_vwap_h3.get(i)
+            float curr_ltf_c  = arr_vwap_c.get(i)
+            
+            if is_armed_short_global
+                if not was_armed_short
+                    cum_vol_short    := 0.0
+                    cum_tp_vol_short := 0.0
+                    trig_vwap_short  := false
+                cum_vol_short    += curr_ltf_v
+                cum_tp_vol_short += curr_ltf_v * curr_ltf_h3
+                float curr_vwap_short = cum_vol_short > 0 ? cum_tp_vol_short / cum_vol_short : curr_ltf_c
+                
+                if was_armed_short and not na(prev_ltf_c) and not na(prev_vwap_short)
+                    if prev_ltf_c >= prev_vwap_short and curr_ltf_c < curr_vwap_short and not trig_vwap_short
+                        float y_pos = arr_highs.get(i) + (running_top_stack * stack_offset)
+                        label.new(idx, y_pos, "V\nW\nA\nP\n▼", color=color.new(BEAR_COLOR, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="Anchor-State VWAP Reclaim (Algorithmic Short)\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_top_stack += 1
+                        last_top_idx := idx
+                        trig_vwap_short := true
+                prev_vwap_short := curr_vwap_short
+            was_armed_short := is_armed_short_global
+            
+            if is_armed_long_global
+                if not was_armed_long
+                    cum_vol_long    := 0.0
+                    cum_tp_vol_long := 0.0
+                    trig_vwap_long  := false
+                cum_vol_long    += curr_ltf_v
+                cum_tp_vol_long += curr_ltf_v * curr_ltf_h3
+                float curr_vwap_long = cum_vol_long > 0 ? cum_tp_vol_long / cum_vol_long : curr_ltf_c
+                
+                if was_armed_long and not na(prev_ltf_c) and not na(prev_vwap_long)
+                    if prev_ltf_c <= prev_vwap_long and curr_ltf_c > curr_vwap_long and not trig_vwap_long
+                        float y_pos = arr_lows.get(i) - (running_bot_stack * stack_offset)
+                        label.new(idx, y_pos, "V\nW\nA\nP\n▲", color=color.new(BULL_COLOR, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="Anchor-State VWAP Reclaim (Algorithmic Long)\nArmed by Non-Causal Boundary", force_overlay = true)
+                        running_bot_stack += 1
+                        last_bot_idx := idx
+                        trig_vwap_long := true
+                prev_vwap_long := curr_vwap_long
+            was_armed_long := is_armed_long_global
+            
+            prev_ltf_c := curr_ltf_c
+
+    // RENDER: WESO line + Sine/Lead lines ONLY (no histograms)
+    polyline.new(weso_pts, line_color = color.blue, line_width = 2)
+
+    if hilbertEnable
+        polyline.new(sine_pts, line_color = color.green, line_width = 2)
+        polyline.new(lead_pts, line_color = LEAD_COLOR, line_width = 2)
+
+    // 5. MAIN CHART WEBBING
+    int dtw_lines = dtwEnable ? (dtwProject ? 3 * (1 + extrapInput) : 3) : 0
+    int available_web_lines = 490 - dtw_lines
+    int lines_per_step = 4 + (webBandsInput * 2) 
+    if hpEnable
+        lines_per_step += 1
+    if sgEnable
+        lines_per_step += 1
+        
+    int max_web_steps = math.max(1, available_web_lines / lines_per_step)
+    
+    int web_lookback = 120 
+    int step = math.max(1, int(math.ceil(web_lookback * 1.0 / max_web_steps)))
+    int start_i = math.max(step, math.min(lengthInput - 2, web_lookback))
+    
+    for i = start_i to step by step
+        int idx1 = bar_index - i, int idx2 = bar_index - (i - step)
+        
+        float v_eU1 = zExtUp.get(i), float v_eU2 = zExtUp.get(i - step)
+        float v_eD1 = zExtDn.get(i), float v_eD2 = zExtDn.get(i - step)
+        float v_nw1 = zNW.get(i),    float v_nw2 = zNW.get(i - step)
+        
+        float v_mid1 = (v_eU1 + zIntUp.get(i) + zIntDn.get(i) + v_eD1) / 4.0
+        float v_mid2 = (v_eU2 + zIntUp.get(i - step) + zIntDn.get(i - step) + v_eD2) / 4.0
+        
+        float vol1 = arr_volMods.get(i), float vol2 = arr_volMods.get(i - step)
+        color nw_color_render = color.new(NW_COLOR, 0)
+        
+        line.new(idx1, v_eU1, idx2, v_eU2, color=color.new(BEAR_COLOR, 0), force_overlay=true, width=2)
+        line.new(idx1, v_eD1, idx2, v_eD2, color=color.new(BULL_COLOR, 0), force_overlay=true, width=2)
+        line.new(idx1, v_mid1, idx2, v_mid2, color=color.new(MID_COLOR, 60), force_overlay=true, style=line.style_dashed)
+        line.new(idx1, v_nw1, idx2, v_nw2, color=nw_color_render, force_overlay=true, width=3)
+        
+        if hpEnable
+            line.new(idx1, zHP.get(i), idx2, zHP.get(i - step), color=HP_COLOR, force_overlay=true, width=2)
+        if sgEnable
+            line.new(idx1, zSG.get(i), idx2, zSG.get(i - step), color=SG_COLOR, force_overlay=true, width=2)
+        
+        for b = 1 to webBandsInput
+            float baseFrac = b / (webBandsInput + 1.0)
+            float f1 = baseFrac * vol1, float f2 = baseFrac * vol2
+            
+            float w_up1 = v_mid1 + f1 * (v_eU1 - v_mid1), float w_dn1 = v_mid1 + f1 * (v_eD1 - v_mid1)
+            float w_up2 = v_mid2 + f2 * (v_eU2 - v_mid2), float w_dn2 = v_mid2 + f2 * (v_eD2 - v_mid2)
+            int transp = math.round(100.0 - (20.0 + baseFrac * 25.0))
+            
+            line.new(idx1, w_up1, idx2, w_up2, color=color.new(BEAR_COLOR, transp), force_overlay=true, width=1)
+            line.new(idx1, w_dn1, idx2, w_dn2, color=color.new(BULL_COLOR, transp), force_overlay=true, width=1)
+
+    // 6. HMM REGIME BACKGROUND FILL
+    if hmmEnable and hmmBgEnable
+        float top_y = global_max_h + global_chart_h * 5.0
+        float bot_y = math.max(0.0000001, global_min_l - global_chart_h * 5.0)
+        
+        int   start_regime_idx = na
+        int   current_reg_state = na
+        
+        for i = lengthInput - 1 to 0
+            int idx = bar_index - i
+            float reg_val = zRegime.get(i)
+            int state = reg_val > 0.3 ? 1 : (reg_val < -0.3 ? -1 : 0)
+            
+            if na(current_reg_state)
+                current_reg_state := state
+                start_regime_idx := idx
+            else if state != current_reg_state or i == 0
+                color bg_col = current_reg_state == 1 ? color.new(BULL_COLOR, 92) : (current_reg_state == -1 ? color.new(BEAR_COLOR, 92) : color.new(MID_COLOR, 95))
+                box.new(left=start_regime_idx, top=top_y, right=idx, bottom=bot_y, border_color=na, bgcolor=bg_col, force_overlay=true)
+                current_reg_state := state
+                start_regime_idx := idx
+
+    // 7. DTW FRACTAL TWIN MATCHER
+    if dtwEnable and lengthInput > dtwTempLen * 2
+        array<float> all_dists = array.new_float(lengthInput, 1000000000.0)
+        
+        for search_i = dtwTempLen to lengthInput - dtwTempLen - 1
+            float dist = 0.0
+            for t = 0 to dtwTempLen - 1
+                float val_temp = zNW.get(t)
+                float val_search = zNW.get(search_i + t)
+                dist += (val_temp - val_search) * (val_temp - val_search)
+            all_dists.set(search_i, dist)
+                
+        array<int> sorted_indices = array.sort_indices(all_dists)
+        array<int> top_matches = array.new_int()
+        
+        for s_idx = 0 to sorted_indices.size() - 1
+            int candidate = sorted_indices.get(s_idx)
+            if all_dists.get(candidate) >= 1000000000.0
+                break
+                
+            bool distinct = true
+            if top_matches.size() > 0
+                for tm = 0 to top_matches.size() - 1
+                    if math.abs(candidate - top_matches.get(tm)) < dtwTempLen
+                        distinct := false
+                        break
+            
+            if distinct
+                top_matches.push(candidate)
+                
+            if top_matches.size() >= 3
+                break
+                
+        for m_i = 0 to top_matches.size() - 1
+            int best_match_idx = top_matches.get(m_i)
+            int curr_idx = bar_index
+            int twin_idx = bar_index - best_match_idx
+            float curr_y = zNW.get(0)
+            float twin_y = zNW.get(best_match_idx)
+            
+            int transp = m_i == 0 ? 0 : (m_i == 1 ? 40 : 70)
+            int w      = m_i == 0 ? 3 : (m_i == 1 ? 2 : 1)
+            color path_col = color.new(DTW_COLOR, transp)
+            
+            line.new(curr_idx, curr_y, twin_idx, twin_y, color=path_col, width=w, style=line.style_dashed, force_overlay=true)
+            
+            if m_i == 0
+                label.new(twin_idx, twin_y, text="Primary Twin", style=label.style_label_down, color=color.new(color.black, 30), textcolor=path_col, size=size.small, tooltip="Dynamic Time Warping\nHistorical Structural Match", force_overlay=true)
+
+            if dtwProject
+                int p_len = math.min(extrapInput, best_match_idx)
+                if p_len > 0
+                    float prev_proj_val = curr_y
+                    for k = 1 to p_len
+                        float hist_future_val = zNW.get(best_match_idx - k)
+                        float delta = hist_future_val - twin_y
+                        float proj_val = curr_y + delta
+                        line.new(curr_idx + k - 1, prev_proj_val, curr_idx + k, proj_val, color=path_col, width=w, style=line.style_dotted, force_overlay=true)
+                        prev_proj_val := proj_val
+                    if m_i == 0
+                        label.new(curr_idx + p_len, prev_proj_val, text="Projected Path", style=label.style_label_up, color=color.new(color.black, 30), textcolor=path_col, size=size.tiny, tooltip="DTW Multiverse\nProjected Future Trajectory", force_overlay=true)
+
+    // 8. HMM REGIME RIBBON (Subpane Base)
+    if hmmEnable
+        int hmm_step = math.max(1, int(math.ceil(lengthInput / 150.0))) 
+        int hmm_start = math.max(hmm_step, math.min(lengthInput - 2, lengthInput))
+        for i = hmm_start to hmm_step by hmm_step
+            int idx1 = bar_index - i, int idx2 = bar_index - (i - hmm_step)
+            float reg1 = zRegime.get(i)
+            color col1 = reg1 > 0.3 ? BULL_COLOR : reg1 < -0.3 ? BEAR_COLOR : MID_COLOR
+            line.new(idx1, -0.85, idx2, -0.85, color=col1, width=6, force_overlay=false)
+
+    // 9. TACTICAL HUD RENDERING
+    if showHUD
+        table.cell(hud, 0, 0, "Log",      text_color = color.white, bgcolor = color.new(color.gray, 60), text_size=size.small)
+        table.cell(hud, 1, 0, "Time",     text_color = color.white, bgcolor = color.new(color.gray, 60), text_size=size.small)
+        table.cell(hud, 2, 0, "Signal",   text_color = color.white, bgcolor = color.new(color.gray, 60), text_size=size.small)
+        table.cell(hud, 3, 0, "Z-Score",  text_color = color.white, bgcolor = color.new(color.gray, 60), text_size=size.small)
+        table.cell(hud, 4, 0, "Conf.",    text_color = color.white, bgcolor = color.new(color.gray, 60), text_size=size.small)
+        
+        int total_sigs = log_bars.size()
+        array<int> sorted_idx = array.sort_indices(log_bars)
+        
+        for row = 1 to 5
+            if row <= total_sigs
+                int s_idx = sorted_idx.get(total_sigs - row)
+                table.cell(hud, 0, row, "T-" + str.tostring(row - 1), text_color=color.gray, text_size=size.small)
+                table.cell(hud, 1, row, log_times.get(s_idx), text_color=color.white, text_size=size.small)
+                table.cell(hud, 2, row, log_types.get(s_idx), text_color=log_cols.get(s_idx), text_size=size.small)
+                table.cell(hud, 3, row, log_zs.get(s_idx),    text_color=color.white, text_size=size.small)
+                table.cell(hud, 4, row, log_confs.get(s_idx), text_color=color.white, text_size=size.small)
+            else
+                table.cell(hud, 0, row, "—", text_color=color.gray, text_size=size.small)
+                table.cell(hud, 1, row, "—", text_color=color.gray, text_size=size.small)
+                table.cell(hud, 2, row, "—", text_color=color.gray, text_size=size.small)
+                table.cell(hud, 3, row, "—", text_color=color.gray, text_size=size.small)
+                table.cell(hud, 4, row, "—", text_color=color.gray, text_size=size.small)
