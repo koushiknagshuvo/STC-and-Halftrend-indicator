@@ -1,0 +1,312 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © SMC_Institutional_Quant_XAUUSD
+//@version=6
+indicator("FTM ENGINE", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// =================================================================================================
+// 1. PARAMETRELER 
+// =================================================================================================
+group_smc = "SMC Ayarları"
+swing_len = input.int(5, title="Swing Pivot Uzunluğu", group=group_smc, minval=2, maxval=20)
+fvg_min_vol = input.float(1.0, title="FVG Hacim Filtresi (ATR Çarpanı)", group=group_smc, step=0.1)
+
+group_ui = "Görsel Temizlik Ayarları"
+max_ob = input.int(5, title="Maksimum OB Sayısı", group=group_ui, minval=1, maxval=50)
+max_fvg = input.int(5, title="Maksimum FVG Sayısı", group=group_ui, minval=1, maxval=50)
+extend_bars = input.int(10, title="Kutuları Sağa Uzatma", group=group_ui, minval=2, maxval=50)
+
+atr = ta.atr(14)
+
+// =================================================================================================
+// 2. ARKA PLAN HTF (15M & 30M) HESAPLAMA MOTORU
+// =================================================================================================
+f_calc_htf() =>
+    _atr = ta.atr(14)
+    _bull_body = close[1] - open[1]
+    _bear_body = open[1] - close[1]
+    
+    _bull_fvg = low > high[2] and close[1] > open[1] and _bull_body > (_atr[1] * fvg_min_vol)
+    _bear_fvg = high < low[2] and close[1] < open[1] and _bear_body > (_atr[1] * fvg_min_vol)
+    
+    var float _bf_t = na, var float _bf_b = na
+    if _bull_fvg
+        _bf_t := low, _bf_b := high[2]
+    if not na(_bf_t) and close < _bf_b
+        _bf_t := na, _bf_b := na
+        
+    var float _brf_t = na, var float _brf_b = na
+    if _bear_fvg
+        _brf_t := low[2], _brf_b := high
+    if not na(_brf_t) and close > _brf_t
+        _brf_t := na, _brf_b := na
+        
+    [_bf_t, _bf_b, _brf_t, _brf_b]
+
+[bf_t_30, bf_b_30, brf_t_30, brf_b_30] = request.security(syminfo.tickerid, "30", f_calc_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+[bf_t_15, bf_b_15, brf_t_15, brf_b_15] = request.security(syminfo.tickerid, "15", f_calc_htf(), barmerge.gaps_off, barmerge.lookahead_off)
+
+
+// =================================================================================================
+// 3. ADIM 1: HTF FVG %50 DOLUM (CE) KRONOLOJİK TAKİBİ
+// =================================================================================================
+var float mem_30m_bf_b = na,  var bool hit_50_30m_bull = false
+var float mem_30m_brf_t = na, var bool hit_50_30m_bear = false
+var float mem_15m_bf_b = na,  var bool hit_50_15m_bull = false
+var float mem_15m_brf_t = na, var bool hit_50_15m_bear = false
+
+// 30M Bullish FVG %50 Dolum
+if not na(bf_t_30)
+    if bf_b_30 != mem_30m_bf_b
+        mem_30m_bf_b := bf_b_30
+        hit_50_30m_bull := false 
+    if not hit_50_30m_bull and low <= math.avg(bf_t_30, bf_b_30)
+        hit_50_30m_bull := true
+        alert("🔔 ADIM 1: 30m Bullish FVG %50 Doldu!", alert.freq_once_per_bar_close)
+
+// 30M Bearish FVG %50 Dolum
+if not na(brf_t_30)
+    if brf_t_30 != mem_30m_brf_t
+        mem_30m_brf_t := brf_t_30
+        hit_50_30m_bear := false
+    if not hit_50_30m_bear and high >= math.avg(brf_t_30, brf_b_30)
+        hit_50_30m_bear := true
+        alert("🔔 ADIM 1: 30m Bearish FVG %50 Doldu!", alert.freq_once_per_bar_close)
+
+// 15M Bullish FVG %50 Dolum
+if not na(bf_t_15)
+    if bf_b_15 != mem_15m_bf_b
+        mem_15m_bf_b := bf_b_15
+        hit_50_15m_bull := false
+    if not hit_50_15m_bull and low <= math.avg(bf_t_15, bf_b_15)
+        hit_50_15m_bull := true
+        alert("🔔 ADIM 1: 15m Bullish FVG %50 Doldu!", alert.freq_once_per_bar_close)
+
+// 15M Bearish FVG %50 Dolum
+if not na(brf_t_15)
+    if brf_t_15 != mem_15m_brf_t
+        mem_15m_brf_t := brf_t_15
+        hit_50_15m_bear := false
+    if not hit_50_15m_bear and high >= math.avg(brf_t_15, brf_b_15)
+        hit_50_15m_bear := true
+        alert("🔔 ADIM 1: 15m Bearish FVG %50 Doldu!", alert.freq_once_per_bar_close)
+
+
+// =================================================================================================
+// 4. BULUNDUĞUN ZAMAN DİLİMİ (LOCAL) FVG & OB ÇİZİMLERİ & PİYASA YAPISI (BOS/CHOCH)
+// =================================================================================================
+var box[] local_bull_fvg_boxes = array.new_box()
+var box[] local_bear_fvg_boxes = array.new_box()
+
+// Local FVG Oluşumu ve Çizimi
+_bull_body_loc = close[1] - open[1]
+_bear_body_loc = open[1] - close[1]
+bull_fvg_loc = low > high[2] and close[1] > open[1] and _bull_body_loc > (atr[1] * fvg_min_vol)
+bear_fvg_loc = high < low[2] and close[1] < open[1] and _bear_body_loc > (atr[1] * fvg_min_vol)
+
+if bull_fvg_loc
+    b = box.new(left=bar_index[2], top=low, bottom=high[2], right=bar_index + extend_bars, bgcolor=color.new(color.blue, 85), border_color=color.blue, text="FVG", text_color=color.new(color.blue, 50), text_size=size.tiny)
+    local_bull_fvg_boxes.push(b)
+    if local_bull_fvg_boxes.size() > max_fvg
+        local_bull_fvg_boxes.shift().delete()
+
+if bear_fvg_loc
+    b = box.new(left=bar_index[2], top=low[2], bottom=high, right=bar_index + extend_bars, bgcolor=color.new(color.orange, 85), border_color=color.orange, text="FVG", text_color=color.new(color.orange, 50), text_size=size.tiny)
+    local_bear_fvg_boxes.push(b)
+    if local_bear_fvg_boxes.size() > max_fvg
+        local_bear_fvg_boxes.shift().delete()
+
+var int ms_trend = 1 
+var bool swing_h_broken = true
+var bool swing_l_broken = true
+
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow(low, swing_len, swing_len)
+
+var float swing_h = na, var int swing_h_bar = na
+var float swing_l = na, var int swing_l_bar = na
+
+if not na(ph)
+    swing_h := ph, swing_h_bar := bar_index[swing_len], swing_h_broken := false
+if not na(pl)
+    swing_l := pl, swing_l_bar := bar_index[swing_len], swing_l_broken := false
+
+var box[] bull_ob_boxes = array.new_box()
+var box[] bear_ob_boxes = array.new_box()
+var box[] golden_bull_ob_boxes = array.new_box()
+var box[] golden_bear_ob_boxes = array.new_box()
+
+// YÜKSELİŞ YÖNLÜ KIRILIM (BOS / CHOCH)
+if close > swing_h and not swing_h_broken
+    swing_h_broken := true 
+    
+    // BOS / CHoCH Çizimleri
+    bool is_choch = (ms_trend == -1)
+    ms_trend := 1 
+    string lbl_txt = is_choch ? "CHoCH" : "BOS"
+    line.new(x1=swing_h_bar, y1=swing_h, x2=bar_index, y2=swing_h, color=color.lime, style=line.style_dashed)
+    label.new(x=math.round(math.avg(swing_h_bar, bar_index)), y=swing_h, text=lbl_txt, color=color.new(color.white, 100), textcolor=color.lime, style=label.style_label_down, size=size.tiny)
+    
+    if bear_ob_boxes.size() > 0
+        for i = bear_ob_boxes.size() - 1 to 0
+            b = bear_ob_boxes.get(i)
+            if b.get_top() <= close
+                int g_idx = golden_bear_ob_boxes.indexof(b)
+                if g_idx != -1
+                    golden_bear_ob_boxes.remove(g_idx)
+                b.delete()
+                bear_ob_boxes.remove(i)
+
+    lookback = math.min(100, bar_index - nz(swing_l_bar, bar_index - 50))
+    int ob_index = na, float min_low = 999999.9
+    for i = 1 to lookback
+        if low[i] < min_low
+            min_low := low[i]
+            ob_index := i
+                
+    if not na(ob_index)
+        _t = high[ob_index]
+        _b = low[ob_index]
+        
+        _c = close[ob_index], _o = open[ob_index], _h = high[ob_index], _l = low[ob_index]
+        _c1 = close[ob_index+1], _o1 = open[ob_index+1]
+        _body = math.abs(_c - _o)
+        _is_engulf = _c > _o and _c > _o1 and _o <= _c1
+        _is_pinbar = (math.min(_c, _o) - _l) > _body * 2 and (_h - math.max(_c, _o)) < _body
+        is_valid = _is_engulf or _is_pinbar
+        
+        bool ce_30 = hit_50_30m_bull and not na(bf_t_30) and _b <= bf_t_30 and _t >= bf_b_30
+        bool ce_15 = hit_50_15m_bull and not na(bf_t_15) and _b <= bf_t_15 and _t >= bf_b_15
+        bool is_golden = (ce_30 or ce_15) and is_valid
+        
+        string ob_text = is_golden ? "⭐ Bull OB" : "Bull OB"
+        
+        b = box.new(left=bar_index[ob_index], top=_t, bottom=_b, right=bar_index + extend_bars, bgcolor=color.new(color.teal, 80), border_color=color.teal, text=ob_text, text_color=color.new(color.teal, 30), text_size=size.tiny)
+        bull_ob_boxes.push(b)
+        
+        if is_golden
+            golden_bull_ob_boxes.push(b)
+            alert("🚨 ADIM 2: HTF FVG Kesişimli Onaylı Bullish OB Oluştu!", alert.freq_once_per_bar_close)
+            
+        if bull_ob_boxes.size() > max_ob
+            bull_ob_boxes.shift().delete()
+
+// DÜŞÜŞ YÖNLÜ KIRILIM (BOS / CHOCH)
+if close < swing_l and not swing_l_broken
+    swing_l_broken := true 
+    
+    // BOS / CHoCH Çizimleri
+    bool is_choch = (ms_trend == 1)
+    ms_trend := -1 
+    string lbl_txt = is_choch ? "CHoCH" : "BOS"
+    line.new(x1=swing_l_bar, y1=swing_l, x2=bar_index, y2=swing_l, color=color.red, style=line.style_dashed)
+    label.new(x=math.round(math.avg(swing_l_bar, bar_index)), y=swing_l, text=lbl_txt, color=color.new(color.white, 100), textcolor=color.red, style=label.style_label_up, size=size.tiny)
+    
+    if bull_ob_boxes.size() > 0
+        for i = bull_ob_boxes.size() - 1 to 0
+            b = bull_ob_boxes.get(i)
+            if b.get_bottom() >= close
+                int g_idx = golden_bull_ob_boxes.indexof(b)
+                if g_idx != -1
+                    golden_bull_ob_boxes.remove(g_idx)
+                b.delete()
+                bull_ob_boxes.remove(i)
+
+    lookback = math.min(100, bar_index - nz(swing_h_bar, bar_index - 50))
+    int ob_index = na, float max_high = 0.0
+    for i = 1 to lookback
+        if high[i] > max_high
+            max_high := high[i]
+            ob_index := i
+                
+    if not na(ob_index)
+        _t = high[ob_index]
+        _b = low[ob_index]
+        
+        _c = close[ob_index], _o = open[ob_index], _h = high[ob_index], _l = low[ob_index]
+        _c1 = close[ob_index+1], _o1 = open[ob_index+1]
+        _body = math.abs(_c - _o)
+        _is_engulf = _c < _o and _c < _o1 and _o >= _c1
+        _is_pinbar = (_h - math.max(_c, _o)) > _body * 2 and (math.min(_c, _o) - _l) < _body
+        is_valid = _is_engulf or _is_pinbar
+        
+        bool ce_30 = hit_50_30m_bear and not na(brf_t_30) and _b <= brf_t_30 and _t >= brf_b_30
+        bool ce_15 = hit_50_15m_bear and not na(brf_t_15) and _b <= brf_t_15 and _t >= brf_b_15
+        bool is_golden = (ce_30 or ce_15) and is_valid
+        
+        string ob_text = is_golden ? "⭐ Bear OB" : "Bear OB"
+
+        b = box.new(left=bar_index[ob_index], top=_t, bottom=_b, right=bar_index + extend_bars, bgcolor=color.new(color.maroon, 80), border_color=color.maroon, text=ob_text, text_color=color.new(color.maroon, 30), text_size=size.tiny)
+        bear_ob_boxes.push(b)
+        
+        if is_golden
+            golden_bear_ob_boxes.push(b)
+            alert("🚨 ADIM 2: HTF FVG Kesişimli Onaylı Bearish OB Oluştu!", alert.freq_once_per_bar_close)
+            
+        if bear_ob_boxes.size() > max_ob
+            bear_ob_boxes.shift().delete()
+
+// =================================================================================================
+// 5. LOCAL KUTU TEMİZLİĞİ VE SİLİNME (MITIGATION) DÖNGÜLERİ
+// =================================================================================================
+if local_bull_fvg_boxes.size() > 0
+    for i = local_bull_fvg_boxes.size() - 1 to 0
+        bx = local_bull_fvg_boxes.get(i)
+        if close < bx.get_bottom()
+            bx.delete()
+            local_bull_fvg_boxes.remove(i)
+        else
+            bx.set_right(bar_index + extend_bars)
+
+if local_bear_fvg_boxes.size() > 0
+    for i = local_bear_fvg_boxes.size() - 1 to 0
+        bx = local_bear_fvg_boxes.get(i)
+        if close > bx.get_top()
+            bx.delete()
+            local_bear_fvg_boxes.remove(i)
+        else
+            bx.set_right(bar_index + extend_bars)
+
+if bull_ob_boxes.size() > 0
+    for i = bull_ob_boxes.size() - 1 to 0
+        bx = bull_ob_boxes.get(i)
+        if close < bx.get_bottom()
+            int g_idx = golden_bull_ob_boxes.indexof(bx)
+            if g_idx != -1
+                golden_bull_ob_boxes.remove(g_idx)
+            bx.delete()
+            bull_ob_boxes.remove(i)
+        else
+            bx.set_right(bar_index + extend_bars)
+
+if bear_ob_boxes.size() > 0
+    for i = bear_ob_boxes.size() - 1 to 0
+        bx = bear_ob_boxes.get(i)
+        if close > bx.get_top()
+            int g_idx = golden_bear_ob_boxes.indexof(bx)
+            if g_idx != -1
+                golden_bear_ob_boxes.remove(g_idx)
+            bx.delete()
+            bear_ob_boxes.remove(i)
+        else
+            bx.set_right(bar_index + extend_bars)
+
+// =================================================================================================
+// 6. ADIM 3: İŞLEME GİRİŞ ONAYI (MÜKERRER SİNYAL ENGELLEYİCİ)
+// =================================================================================================
+// LONG SİNYALLERİ (Tek Seferlik)
+if golden_bull_ob_boxes.size() > 0
+    for i = golden_bull_ob_boxes.size() - 1 to 0
+        bx = golden_bull_ob_boxes.get(i)
+        if low <= bx.get_top() and high >= bx.get_bottom() 
+            label.new(bar_index, low, text="🚀 BUY", color=color.new(color.lime, 0), textcolor=color.black, style=label.style_label_up, size=size.small)
+            alert("🔥 ADIM 3: Onaylı Bullish OB Test Edildi (ALIM YERİ)!", alert.freq_once_per_bar_close)
+            golden_bull_ob_boxes.remove(i)
+
+// SHORT SİNYALLERİ (Tek Seferlik)
+if golden_bear_ob_boxes.size() > 0
+    for i = golden_bear_ob_boxes.size() - 1 to 0
+        bx = golden_bear_ob_boxes.get(i)
+        if high >= bx.get_bottom() and low <= bx.get_top() 
+            label.new(bar_index, high, text="🔻 SELL", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+            alert("🔥 ADIM 3: Onaylı Bearish OB Test Edildi (SATIŞ YERİ)!", alert.freq_once_per_bar_close)
+            golden_bear_ob_boxes.remove(i)
