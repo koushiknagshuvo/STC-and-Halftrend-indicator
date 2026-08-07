@@ -1,0 +1,360 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © StrixEDGE
+
+//@version=6
+indicator("EMA Pulse Momentum System v3 [StrixEDGE]", overlay=true, max_lines_count=50, max_labels_count=100, max_boxes_count=10)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+grp1 = "EMA Settings"
+ema_fast   = input.int(8,  "Fast EMA",   minval=3,  maxval=50,  group=grp1)
+ema_mid    = input.int(21, "Mid EMA",    minval=10, maxval=100, group=grp1)
+ema_slow   = input.int(55, "Slow EMA",   minval=20, maxval=200, group=grp1)
+
+grp2 = "RSI Filter"
+rsi_len    = input.int(14, "RSI Length", minval=5, maxval=30, group=grp2)
+rsi_bull   = input.int(55, "RSI Bull Threshold", minval=45, maxval=65, group=grp2, tooltip="RSI must be above this level for long entries.")
+rsi_bear   = input.int(45, "RSI Bear Threshold", minval=35, maxval=55, group=grp2, tooltip="RSI must be below this level for short entries.")
+
+grp3 = "Risk Management"
+sl_mult    = input.float(1.2, "SL Multiplier (ATR)", minval=0.3, maxval=3.0, step=0.1, group=grp3)
+rr_target  = input.float(2.0, "Minimum Risk:Reward Ratio", minval=1.0, maxval=5.0, step=0.1, group=grp3, tooltip="TP distance is locked to SL distance × this ratio.")
+atr_len    = input.int(14,  "ATR Length",    minval=5,  maxval=30, group=grp3)
+
+grp5 = "Accuracy Filters"
+use_htf_filter   = input.bool(true, "Use Higher Timeframe Trend Filter", group=grp5)
+htf_tf           = input.timeframe("240", "Higher Timeframe", group=grp5)
+use_adx_filter   = input.bool(true, "Use ADX Trend-Strength Filter", group=grp5)
+adx_len          = input.int(14, "ADX Length", minval=5, maxval=50, group=grp5)
+adx_threshold    = input.int(20, "Minimum ADX (trend strength)", minval=10, maxval=40, group=grp5)
+use_vol_filter   = input.bool(true, "Use Volatility Filter", group=grp5)
+vol_ma_len       = input.int(50, "ATR Average Length", minval=10, maxval=100, group=grp5)
+vol_min_ratio    = input.float(0.8, "Min ATR vs Average (x)", minval=0.3, maxval=1.5, step=0.1, group=grp5)
+use_confirm_bar  = input.bool(true, "Require Close Beyond EMA21 on Signal Bar", group=grp5)
+use_cooldown     = input.bool(true, "Use Signal Cooldown", group=grp5)
+cooldown_bars    = input.int(10, "Cooldown Bars Between Signals", minval=1, maxval=50, group=grp5)
+min_strength     = input.int(0, "Minimum Signal Strength to Plot (0-100)", minval=0, maxval=100, group=grp5, tooltip="Signals below this strength score are suppressed. 0 = show all valid signals.")
+
+grp4 = "Display"
+show_emas   = input.bool(true,  "Show EMA Lines",       group=grp4)
+show_cloud  = input.bool(true,  "Show EMA Cloud",       group=grp4)
+show_table  = input.bool(true,  "Show Info Table",      group=grp4)
+show_stats  = input.bool(true,  "Show Win-Rate Stats",  group=grp4)
+tbl_pos     = input.string("Bottom Right", "Table Position", options=["Bottom Right","Bottom Left","Top Right","Top Left"], group=grp4)
+tbl_size    = input.string("Small", "Table Size", options=["Tiny","Small","Normal","Large","Huge"], group=grp4)
+
+// ─────────────────────────────────────────────
+// CORE CALCULATIONS
+// ─────────────────────────────────────────────
+ema8  = ta.ema(close, ema_fast)
+ema21 = ta.ema(close, ema_mid)
+ema55 = ta.ema(close, ema_slow)
+rsi   = ta.rsi(close, rsi_len)
+atr   = ta.atr(atr_len)
+
+// Ribbon alignment
+bull_align = ema8 > ema21 and ema21 > ema55
+bear_align = ema8 < ema21 and ema21 < ema55
+
+// Momentum pulse: RSI beyond threshold
+rsi_bull_confirm = rsi > rsi_bull
+rsi_bear_confirm = rsi < rsi_bear
+
+// ── Accuracy filter: Higher timeframe trend (anti-repaint) ──
+// Referencing [1] locks to the last CONFIRMED HTF bar so this can't repaint intrabar.
+htf_ema55 = request.security(syminfo.tickerid, htf_tf, ta.ema(close, ema_slow)[1], lookahead=barmerge.lookahead_off)
+htf_close = request.security(syminfo.tickerid, htf_tf, close[1], lookahead=barmerge.lookahead_off)
+htf_bull  = htf_close > htf_ema55
+htf_bear  = htf_close < htf_ema55
+htf_ok_long  = not use_htf_filter or htf_bull
+htf_ok_short = not use_htf_filter or htf_bear
+
+// ── Accuracy filter: ADX trend strength ──
+[diplus, diminus, adx] = ta.dmi(adx_len, adx_len)
+trending = adx > adx_threshold
+adx_ok = not use_adx_filter or trending
+
+// ── Accuracy filter: Volatility floor ──
+atr_avg = ta.sma(atr, vol_ma_len)
+vol_ok  = not use_vol_filter or (atr > atr_avg * vol_min_ratio)
+
+// ── Accuracy filter: Close beyond EMA21 confirmation (same bar as trigger) ──
+confirm_long_ok  = not use_confirm_bar or (close > ema21)
+confirm_short_ok = not use_confirm_bar or (close < ema21)
+
+// ── Accuracy filter: Cooldown between signals ──
+var int last_signal_bar = na
+cooldown_ok = not use_cooldown or na(last_signal_bar) or (bar_index - last_signal_bar > cooldown_bars)
+
+// ─────────────────────────────────────────────
+// ENTRY TRIGGER — fixed logic
+// Fires on the FIRST bar the full ribbon alignment forms (not the EMA8/21 cross bar).
+// This removes the old contradiction where the confirm filter vetoed nearly every signal.
+// ─────────────────────────────────────────────
+raw_long  = bull_align and not bull_align[1] and rsi_bull_confirm
+raw_short = bear_align and not bear_align[1] and rsi_bear_confirm
+
+long_signal_pre  = raw_long  and htf_ok_long  and adx_ok and vol_ok and confirm_long_ok  and cooldown_ok
+short_signal_pre = raw_short and htf_ok_short and adx_ok and vol_ok and confirm_short_ok and cooldown_ok
+
+// ─────────────────────────────────────────────
+// SIGNAL STRENGTH SCORE (0-100)
+// ─────────────────────────────────────────────
+adx_score  = math.min(adx / 40, 1.0) * 30
+rsi_dist_long  = math.max(rsi - rsi_bull, 0)
+rsi_dist_short = math.max(rsi_bear - rsi, 0)
+rsi_score_long  = math.min(rsi_dist_long  / 15, 1.0) * 25
+rsi_score_short = math.min(rsi_dist_short / 15, 1.0) * 25
+htf_score_long  = htf_bull ? 25.0 : 0.0
+htf_score_short = htf_bear ? 25.0 : 0.0
+vol_ratio  = atr_avg > 0 ? atr / atr_avg : 1.0
+vol_score  = math.min(vol_ratio / (vol_min_ratio * 1.5), 1.0) * 20
+
+strength_long  = adx_score + rsi_score_long  + htf_score_long  + vol_score
+strength_short = adx_score + rsi_score_short + htf_score_short + vol_score
+
+long_signal  = long_signal_pre  and strength_long  >= min_strength
+short_signal = short_signal_pre and strength_short >= min_strength
+
+if long_signal or short_signal
+    last_signal_bar := bar_index
+
+// ─────────────────────────────────────────────
+// TP / SL LEVELS — locked to minimum R:R ratio
+// ─────────────────────────────────────────────
+var float entry_price = na
+var float tp_price    = na
+var float sl_price    = na
+var int   sig_dir     = 0  // 1=long, -1=short
+var float sig_strength = na
+
+sl_dist = atr * sl_mult
+tp_dist = sl_dist * rr_target
+
+if long_signal
+    entry_price   := close
+    sl_price      := close - sl_dist
+    tp_price      := close + tp_dist
+    sig_dir       := 1
+    sig_strength  := strength_long
+
+if short_signal
+    entry_price   := close
+    sl_price      := close + sl_dist
+    tp_price      := close - tp_dist
+    sig_dir       := -1
+    sig_strength  := strength_short
+
+rr_ratio = na(entry_price) or na(sl_price) ? na : math.abs(tp_price - entry_price) / math.abs(sl_price - entry_price)
+
+// ─────────────────────────────────────────────
+// WIN-RATE TRACKING
+// Every new signal is pushed into a pending-trade array. On each subsequent bar we
+// check whether TP or SL was touched first. If both are touched on the same bar we
+// conservatively assume SL hit first (worst case).
+// ─────────────────────────────────────────────
+var array<float> p_entry = array.new_float()
+var array<float> p_tp    = array.new_float()
+var array<float> p_sl    = array.new_float()
+var array<int>   p_dir   = array.new_int()
+var array<int>   p_bar   = array.new_int()
+
+var int total_signals   = 0
+var int wins            = 0
+var int losses          = 0
+var int expired         = 0
+
+max_hold_bars = 300  // give up tracking a trade after this many bars (counts as expired, not scored)
+
+if long_signal
+    array.push(p_entry, entry_price)
+    array.push(p_tp, tp_price)
+    array.push(p_sl, sl_price)
+    array.push(p_dir, 1)
+    array.push(p_bar, bar_index)
+    total_signals += 1
+
+if short_signal
+    array.push(p_entry, entry_price)
+    array.push(p_tp, tp_price)
+    array.push(p_sl, sl_price)
+    array.push(p_dir, -1)
+    array.push(p_bar, bar_index)
+    total_signals += 1
+
+if array.size(p_dir) > 0
+    for i = array.size(p_dir) - 1 to 0
+        d   = array.get(p_dir, i)
+        tp_ = array.get(p_tp, i)
+        sl_ = array.get(p_sl, i)
+        b_  = array.get(p_bar, i)
+        resolved = false
+
+        if d == 1
+            if low <= sl_
+                losses += 1
+                resolved := true
+            else if high >= tp_
+                wins += 1
+                resolved := true
+        else
+            if high >= sl_
+                losses += 1
+                resolved := true
+            else if low <= tp_
+                wins += 1
+                resolved := true
+
+        if not resolved and (bar_index - b_) > max_hold_bars
+            expired += 1
+            resolved := true
+
+        if resolved
+            array.remove(p_dir, i)
+            array.remove(p_tp, i)
+            array.remove(p_sl, i)
+            array.remove(p_entry, i)
+            array.remove(p_bar, i)
+
+win_rate = (wins + losses) > 0 ? (wins / (wins + losses)) * 100 : na
+
+// ─────────────────────────────────────────────
+// VISUALS — EMA LINES
+// ─────────────────────────────────────────────
+col_fast = bull_align ? color.new(#00C087, 0) : color.new(#FF5C72, 0)
+col_mid  = bull_align ? color.new(#00C087, 30) : color.new(#FF5C72, 30)
+col_slow = color.new(#9B9EA6, 40)
+
+p_fast = plot(show_emas ? ema8  : na, "EMA Fast",  col_fast, 2)
+p_mid  = plot(show_emas ? ema21 : na, "EMA Mid",   col_mid,  1)
+p_slow = plot(show_emas ? ema55 : na, "EMA Slow",  col_slow, 1, plot.style_line)
+
+fill(p_fast, p_mid, color = show_cloud ? (bull_align ? color.new(#00C087, 88) : color.new(#FF5C72, 88)) : na, title="EMA Cloud")
+
+// ─────────────────────────────────────────────
+// ENTRY SIGNALS
+// ─────────────────────────────────────────────
+plotshape(long_signal,  "Long Entry",  shape.triangleup,   location.belowbar, color.new(#00C087, 0), size=size.normal)
+plotshape(short_signal, "Short Entry", shape.triangledown,  location.abovebar, color.new(#FF5C72, 0), size=size.normal)
+
+// ─────────────────────────────────────────────
+// TP / SL LINES + STRENGTH LABEL (drawn on signal bars)
+// ─────────────────────────────────────────────
+var line tp_line = na
+var line sl_line = na
+var line ep_line = na
+
+if long_signal or short_signal
+    line.delete(tp_line)
+    line.delete(sl_line)
+    line.delete(ep_line)
+
+    ep_line := line.new(bar_index, entry_price, bar_index + 30, entry_price,
+         color=color.new(#9B9EA6, 20), width=1, style=line.style_dashed)
+    tp_line := line.new(bar_index, tp_price, bar_index + 30, tp_price,
+         color=color.new(#00C087, 0), width=2, style=line.style_solid)
+    sl_line := line.new(bar_index, sl_price, bar_index + 30, sl_price,
+         color=color.new(#FF5C72, 0), width=2, style=line.style_solid)
+
+    label.new(bar_index + 31, tp_price, "TP  " + str.tostring(math.round(tp_price, 4)),
+         color=color.new(#00C087, 10), textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(bar_index + 31, entry_price, "EP  " + str.tostring(math.round(entry_price, 4)),
+         color=color.new(#9B9EA6, 20), textcolor=color.white, style=label.style_label_left, size=size.small)
+    label.new(bar_index + 31, sl_price, "SL  " + str.tostring(math.round(sl_price, 4)),
+         color=color.new(#FF5C72, 10), textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    strength_txt = str.tostring(math.round(sig_dir == 1 ? strength_long : strength_short, 0)) + "%"
+    label.new(bar_index, sig_dir == 1 ? low : high, "★ " + strength_txt,
+         color=color.new(#4A9EFF, 15), textcolor=color.white,
+         style=sig_dir == 1 ? label.style_label_up : label.style_label_down, size=size.small)
+
+// ─────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────
+if show_table and barstate.islast
+    tbl_position = switch tbl_pos
+        "Bottom Right" => position.bottom_right
+        "Bottom Left"  => position.bottom_left
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        => position.bottom_right
+
+    tbl_sz = switch tbl_size
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        => size.small
+
+    rows = show_stats ? 12 : 9
+    tbl = table.new(tbl_position, 2, rows,
+         bgcolor=color.new(#0C0F16, 8),
+         border_color=color.new(#1E2738, 0),
+         border_width=1,
+         frame_color=color.new(#1E2738, 0),
+         frame_width=1)
+
+    table.cell(tbl, 0, 0, "EMA PULSE SYSTEM v3", text_color=color.new(#E1E7EF, 0), text_size=tbl_sz, bgcolor=color.new(#161D2B, 0), text_halign=text.align_center)
+    table.cell(tbl, 1, 0, "StrixEDGE", text_color=color.new(#4A9EFF, 0),       text_size=tbl_sz, bgcolor=color.new(#161D2B, 0), text_halign=text.align_center)
+
+    trend_txt   = bull_align ? "▲ BULLISH" : bear_align ? "▼ BEARISH" : "◈ NEUTRAL"
+    trend_color = bull_align ? color.new(#00C087, 0) : bear_align ? color.new(#FF5C72, 0) : color.new(#9B9EA6, 0)
+    table.cell(tbl, 0, 1, "Trend",  text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 1, trend_txt, text_color=trend_color,          text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    htf_txt   = htf_bull ? "▲ BULL" : htf_bear ? "▼ BEAR" : "—"
+    htf_color = htf_bull ? color.new(#00C087, 0) : htf_bear ? color.new(#FF5C72, 0) : color.new(#9B9EA6, 0)
+    table.cell(tbl, 0, 2, "HTF (" + htf_tf + ")", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 2, htf_txt, text_color=htf_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    adx_txt   = str.tostring(math.round(adx, 1)) + (trending ? " ✓" : " ✗")
+    adx_color = trending ? color.new(#00C087, 0) : color.new(#9B9EA6, 0)
+    table.cell(tbl, 0, 3, "ADX", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 3, adx_txt, text_color=adx_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    rsi_txt   = str.tostring(math.round(rsi, 1))
+    rsi_color = rsi > rsi_bull ? color.new(#00C087, 0) : rsi < rsi_bear ? color.new(#FF5C72, 0) : color.new(#9B9EA6, 0)
+    table.cell(tbl, 0, 4, "RSI (" + str.tostring(rsi_len) + ")", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 4, rsi_txt, text_color=rsi_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    vol_txt   = vol_ok ? "OK ✓" : "LOW ✗"
+    vol_color = vol_ok ? color.new(#00C087, 0) : color.new(#FF5C72, 0)
+    table.cell(tbl, 0, 5, "Volatility", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 5, vol_txt, text_color=vol_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    sig_txt   = sig_dir == 1 ? "▲ LONG" : sig_dir == -1 ? "▼ SHORT" : "—"
+    sig_color = sig_dir == 1 ? color.new(#00C087, 0) : sig_dir == -1 ? color.new(#FF5C72, 0) : color.new(#9B9EA6, 0)
+    table.cell(tbl, 0, 6, "Last Signal", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 6, sig_txt,  text_color=sig_color,             text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    rr_txt   = na(rr_ratio) ? "—" : str.tostring(math.round(rr_ratio, 2)) + " : 1"
+    rr_color = na(rr_ratio) ? color.new(#9B9EA6, 0) : rr_ratio >= rr_target ? color.new(#00C087, 0) : color.new(#FFB547, 0)
+    table.cell(tbl, 0, 7, "R : R",  text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 7, rr_txt,   text_color=rr_color,              text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    stack_txt   = bull_align ? "8>21>55 ✓" : bear_align ? "8<21<55 ✓" : "Mixed ✗"
+    stack_color = (bull_align or bear_align) ? color.new(#00C087, 0) : color.new(#FF5C72, 0)
+    table.cell(tbl, 0, 8, "Stack", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+    table.cell(tbl, 1, 8, stack_txt, text_color=stack_color,          text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+    if show_stats
+        strength_txt2 = na(sig_strength) ? "—" : str.tostring(math.round(sig_strength, 0)) + "%"
+        strength_color = na(sig_strength) ? color.new(#9B9EA6, 0) : sig_strength >= 70 ? color.new(#00C087, 0) : sig_strength >= 45 ? color.new(#FFB547, 0) : color.new(#FF5C72, 0)
+        table.cell(tbl, 0, 9, "Last Strength", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+        table.cell(tbl, 1, 9, strength_txt2, text_color=strength_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+        wr_txt   = na(win_rate) ? "— (0 closed)" : str.tostring(math.round(win_rate, 1)) + "% (" + str.tostring(wins + losses) + " closed)"
+        wr_color = na(win_rate) ? color.new(#9B9EA6, 0) : win_rate >= 50 ? color.new(#00C087, 0) : color.new(#FF5C72, 0)
+        table.cell(tbl, 0, 10, "Win Rate", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+        table.cell(tbl, 1, 10, wr_txt, text_color=wr_color, text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+        table.cell(tbl, 0, 11, "Total Signals", text_color=color.new(#8892A4, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+        table.cell(tbl, 1, 11, str.tostring(total_signals), text_color=color.new(#E1E7EF, 0), text_size=tbl_sz, bgcolor=color.new(#111621, 0))
+
+// ─────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────
+alertcondition(long_signal,  "EMA Pulse — Long Entry",  "EMA Pulse: LONG signal detected. All filters confirmed — check chart.")
+alertcondition(short_signal, "EMA Pulse — Short Entry", "EMA Pulse: SHORT signal detected. All filters confirmed — check chart.")
