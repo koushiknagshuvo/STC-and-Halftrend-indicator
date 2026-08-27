@@ -1,0 +1,275 @@
+//@version=5
+indicator("SMC All Blocks: Sweep+OB+FVG, Mitigation, Breaker, Rejection, Reclaim [4H]", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+// ======================================================================
+// INPUTS
+// ======================================================================
+grp1 = "Swing / Structure Settings"
+pivotLen   = input.int(5, "Swing Pivot Length", minval=1, group=grp1,
+     tooltip="Apply this indicator on a 4H chart. All logic runs on the chart's own timeframe.")
+lookahead  = input.int(15, "Max Bars to Wait for Displacement/FVG after Sweep", minval=3, group=grp1)
+maxOBSearch = input.int(15, "Max bars back to search for an Order Block candle", minval=2, group=grp1)
+
+grp2 = "Entry Setup (Sweep + OB + FVG)"
+showEntry    = input.bool(true, "Show Entry Setup (Sweep/OB/FVG)", group=grp2)
+useATRFilter = input.bool(false, "Filter tiny FVGs using ATR", group=grp2)
+atrLen       = input.int(14, "ATR Length", minval=1, group=grp2)
+minFVGxATR   = input.float(0.15, "Min FVG size (x ATR)", minval=0.0, step=0.05, group=grp2)
+bullOBColor  = input.color(color.new(color.blue, 75), "Bullish OB Color", group=grp2)
+bearOBColor  = input.color(color.new(color.red, 75), "Bearish OB Color", group=grp2)
+bullFVGColor = input.color(color.new(color.teal, 82), "Bullish FVG Color", group=grp2)
+bearFVGColor = input.color(color.new(color.orange, 82), "Bearish FVG Color", group=grp2)
+
+grp3 = "Advanced Blocks"
+showMitigation = input.bool(true, "Show Mitigation Block", group=grp3)
+showBreaker    = input.bool(true, "Show Breaker Block", group=grp3)
+showReclaim    = input.bool(true, "Show Reclaim Order Block", group=grp3)
+reclaimMaxLegs = input.int(3, "Reclaim: how many OBs per leg to mark", minval=1, maxval=6, group=grp3)
+mitigationColor = input.color(color.new(color.purple, 75), "Mitigation Block Color", group=grp3)
+breakerColor    = input.color(color.new(color.maroon, 70), "Breaker Block Color", group=grp3)
+reclaimColor    = input.color(color.new(color.gray, 80), "Reclaim Block Color", group=grp3)
+
+grp4 = "Rejection Block"
+showRejection    = input.bool(true, "Show Rejection Block", group=grp4)
+rejectionMinWickATR = input.float(0.25, "Min wick size (x ATR) to qualify", minval=0.0, step=0.05, group=grp4)
+rejectionColor   = input.color(color.new(color.olive, 75), "Rejection Block Color", group=grp4)
+
+grp5 = "Display"
+showSweepTag = input.bool(true, "Show Sweep Markers", group=grp5)
+extendBars   = input.int(25, "Box Extend to the Right (bars)", minval=1, group=grp5)
+
+// ======================================================================
+// SWING / PIVOT TRACKING
+// ======================================================================
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+atrVal = ta.atr(atrLen)
+
+var float lastPH = na
+var float lastPL = na
+var bool  phSwept = true      // gates the wick-sweep (Entry Setup) re-trigger
+var bool  plSwept = true
+var bool  phBrokenBOS = true  // gates the close-through (structure) re-trigger
+var bool  plBrokenBOS = true
+
+// leg-accumulator arrays (collect every pivot formed during the current leg)
+var array<float> legHighVals = array.new_float(0)
+var array<int>   legHighBars = array.new_int(0)
+var array<float> legLowVals  = array.new_float(0)
+var array<int>   legLowBars  = array.new_int(0)
+
+var string trend = ""
+var bool hadHighSweepThisLeg = false   // buy-side liquidity taken during current up-leg
+var bool hadLowSweepThisLeg  = false   // sell-side liquidity taken during current down-leg
+
+if not na(ph)
+    lastPH := ph
+    phSwept := false
+    phBrokenBOS := false
+    array.push(legHighVals, ph)
+    array.push(legHighBars, bar_index - pivotLen)
+    if array.size(legHighVals) > 8
+        array.shift(legHighVals)
+        array.shift(legHighBars)
+
+if not na(pl)
+    lastPL := pl
+    plSwept := false
+    plBrokenBOS := false
+    array.push(legLowVals, pl)
+    array.push(legLowBars, bar_index - pivotLen)
+    if array.size(legLowVals) > 8
+        array.shift(legLowVals)
+        array.shift(legLowBars)
+
+// ======================================================================
+// LIQUIDITY SWEEP (wick beyond swing, close back inside)
+// ======================================================================
+bearSweep = not phSwept and not na(lastPH) and high > lastPH and close < lastPH
+bullSweep = not plSwept and not na(lastPL) and low < lastPL and close > lastPL
+
+if bearSweep
+    phSwept := true
+    hadHighSweepThisLeg := true
+if bullSweep
+    plSwept := true
+    hadLowSweepThisLeg := true
+
+// ======================================================================
+// ORDER BLOCK FINDER (last opposite-colour candle near a swing extreme)
+// ======================================================================
+f_findOB(startOff, wantBearishCandle, maxBack) =>
+    int foundOffset = na
+    for i = startOff to startOff + maxBack
+        bool cond = wantBearishCandle ? (close[i] < open[i]) : (close[i] > open[i])
+        if cond
+            foundOffset := i
+            break
+    foundOffset
+
+f_drawBlockBox(anchorOffset, isBullish, lbl, colBorder) =>
+    if not na(anchorOffset)
+        topV = high[anchorOffset]
+        botV = low[anchorOffset]
+        leftB = bar_index - anchorOffset
+        box.new(leftB, topV, bar_index + extendBars, botV, border_color=colBorder, bgcolor=color.new(colBorder, 78), extend=extend.none)
+        label.new(leftB, isBullish ? botV : topV, lbl, style=isBullish ? label.style_label_up : label.style_label_down, color=colBorder, textcolor=color.white, size=size.tiny)
+
+// ======================================================================
+// ENTRY SETUP: WAIT-FOR-DISPLACEMENT + FVG (after a liquidity sweep)
+// ======================================================================
+var bool waitingBearDisp = false
+var int  bearSweepBar    = na
+var bool waitingBullDisp = false
+var int  bullSweepBar    = na
+
+if bearSweep
+    waitingBearDisp := true
+    bearSweepBar := bar_index
+if bullSweep
+    waitingBullDisp := true
+    bullSweepBar := bar_index
+
+if waitingBearDisp and (bar_index - bearSweepBar > lookahead)
+    waitingBearDisp := false
+if waitingBullDisp and (bar_index - bullSweepBar > lookahead)
+    waitingBullDisp := false
+
+bullFVGraw  = low > high[2]
+bearFVGraw  = high < low[2]
+bullFVGsize = low - high[2]
+bearFVGsize = low[2] - high
+bullFVG = bullFVGraw and (not useATRFilter or bullFVGsize >= minFVGxATR * atrVal)
+bearFVG = bearFVGraw and (not useATRFilter or bearFVGsize >= minFVGxATR * atrVal)
+
+bullEntryZone = false
+bearEntryZone = false
+
+if waitingBullDisp and bullFVG
+    if showEntry
+        box.new(bar_index - 2, high[2], bar_index + extendBars, low[2], border_color=color.blue, bgcolor=bullOBColor, extend=extend.none)
+        box.new(bar_index - 2, high[2], bar_index + extendBars, low, border_color=color.teal, bgcolor=bullFVGColor, extend=extend.none)
+    bullEntryZone := true
+    waitingBullDisp := false
+
+if waitingBearDisp and bearFVG
+    if showEntry
+        box.new(bar_index - 2, high[2], bar_index + extendBars, low[2], border_color=color.red, bgcolor=bearOBColor, extend=extend.none)
+        box.new(bar_index - 2, low[2], bar_index + extendBars, high, border_color=color.orange, bgcolor=bearFVGColor, extend=extend.none)
+    bearEntryZone := true
+    waitingBearDisp := false
+
+if showEntry and showSweepTag and bearSweep
+    label.new(bar_index, high, "SWEEP", style=label.style_label_down, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+if showEntry and showSweepTag and bullSweep
+    label.new(bar_index, low, "SWEEP", style=label.style_label_up, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+
+plotshape(showEntry and bearSweep, title="Bearish Sweep", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny)
+plotshape(showEntry and bullSweep, title="Bullish Sweep", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny)
+
+// ======================================================================
+// STRUCTURE / BOS -> MITIGATION, BREAKER, RECLAIM
+// ======================================================================
+bullishBOS = not phBrokenBOS and not na(lastPH) and close > lastPH
+bearishBOS = not plBrokenBOS and not na(lastPL) and close < lastPL
+
+bullMitigation = false
+bearMitigation = false
+bullBreaker = false
+bearBreaker = false
+bullReclaim = false
+bearReclaim = false
+
+if bullishBOS
+    phBrokenBOS := true
+    wasDowntrend = trend == "down"
+    if wasDowntrend and array.size(legLowVals) > 0
+        lastIdx = array.size(legLowVals) - 1
+        lastLowBar = array.get(legLowBars, lastIdx)
+        obOff = f_findOB(bar_index - lastLowBar, false, maxOBSearch)
+        isBreaker = hadLowSweepThisLeg
+        if isBreaker and showBreaker
+            f_drawBlockBox(obOff, true, "BREAKER (Bull)", breakerColor)
+            bullBreaker := true
+        if not isBreaker and showMitigation
+            f_drawBlockBox(obOff, true, "MITIGATION (Bull)", mitigationColor)
+            bullMitigation := true
+        if showReclaim
+            for k = 0 to math.min(reclaimMaxLegs, array.size(legLowVals)) - 1
+                idx = array.size(legLowVals) - 1 - k
+                lb = array.get(legLowBars, idx)
+                fo = f_findOB(bar_index - lb, false, maxOBSearch)
+                f_drawBlockBox(fo, true, "RECLAIM (Bull)", reclaimColor)
+            bullReclaim := true
+    trend := "up"
+    array.clear(legLowVals)
+    array.clear(legLowBars)
+    hadLowSweepThisLeg := false
+
+if bearishBOS
+    plBrokenBOS := true
+    wasUptrend = trend == "up"
+    if wasUptrend and array.size(legHighVals) > 0
+        lastIdx2 = array.size(legHighVals) - 1
+        lastHighBar = array.get(legHighBars, lastIdx2)
+        obOff2 = f_findOB(bar_index - lastHighBar, true, maxOBSearch)
+        isBreaker2 = hadHighSweepThisLeg
+        if isBreaker2 and showBreaker
+            f_drawBlockBox(obOff2, false, "BREAKER (Bear)", breakerColor)
+            bearBreaker := true
+        if not isBreaker2 and showMitigation
+            f_drawBlockBox(obOff2, false, "MITIGATION (Bear)", mitigationColor)
+            bearMitigation := true
+        if showReclaim
+            for k = 0 to math.min(reclaimMaxLegs, array.size(legHighVals)) - 1
+                idx2 = array.size(legHighVals) - 1 - k
+                hb = array.get(legHighBars, idx2)
+                fo2 = f_findOB(bar_index - hb, true, maxOBSearch)
+                f_drawBlockBox(fo2, false, "RECLAIM (Bear)", reclaimColor)
+            bearReclaim := true
+    trend := "down"
+    array.clear(legHighVals)
+    array.clear(legHighBars)
+    hadHighSweepThisLeg := false
+
+// ======================================================================
+// REJECTION BLOCK (wick-based, at any qualifying pivot)
+// ======================================================================
+bearRejection = false
+bullRejection = false
+
+if showRejection and not na(ph)
+    wickSize = ph - math.max(open[pivotLen], close[pivotLen])
+    if wickSize >= rejectionMinWickATR * atrVal
+        topR = ph
+        botR = ph - wickSize / 2.0
+        leftR = bar_index - pivotLen
+        box.new(leftR, topR, bar_index + extendBars, botR, border_color=rejectionColor, bgcolor=color.new(rejectionColor, 78), extend=extend.none)
+        label.new(leftR, topR, "REJECTION", style=label.style_label_down, color=rejectionColor, textcolor=color.white, size=size.tiny)
+        bearRejection := true
+
+if showRejection and not na(pl)
+    wickSize2 = math.min(open[pivotLen], close[pivotLen]) - pl
+    if wickSize2 >= rejectionMinWickATR * atrVal
+        botR2 = pl
+        topR2 = pl + wickSize2 / 2.0
+        leftR2 = bar_index - pivotLen
+        box.new(leftR2, topR2, bar_index + extendBars, botR2, border_color=rejectionColor, bgcolor=color.new(rejectionColor, 78), extend=extend.none)
+        label.new(leftR2, botR2, "REJECTION", style=label.style_label_up, color=rejectionColor, textcolor=color.white, size=size.tiny)
+        bullRejection := true
+
+// ======================================================================
+// ALERTS
+// ======================================================================
+alertcondition(bearSweep, "Bearish Liquidity Sweep", "{{ticker}} {{interval}}: Bearish liquidity sweep. Watch for displacement + FVG.")
+alertcondition(bullSweep, "Bullish Liquidity Sweep", "{{ticker}} {{interval}}: Bullish liquidity sweep. Watch for displacement + FVG.")
+alertcondition(bearEntryZone, "Bearish Entry Zone (OB+FVG)", "{{ticker}} {{interval}}: Bearish OB+FVG entry zone formed.")
+alertcondition(bullEntryZone, "Bullish Entry Zone (OB+FVG)", "{{ticker}} {{interval}}: Bullish OB+FVG entry zone formed.")
+alertcondition(bearMitigation, "Bearish Mitigation Block", "{{ticker}} {{interval}}: Bearish Mitigation Block formed.")
+alertcondition(bullMitigation, "Bullish Mitigation Block", "{{ticker}} {{interval}}: Bullish Mitigation Block formed.")
+alertcondition(bearBreaker, "Bearish Breaker Block", "{{ticker}} {{interval}}: Bearish Breaker Block formed.")
+alertcondition(bullBreaker, "Bullish Breaker Block", "{{ticker}} {{interval}}: Bullish Breaker Block formed.")
+alertcondition(bearReclaim, "Bearish Reclaim Block(s)", "{{ticker}} {{interval}}: Bearish Reclaim Order Block(s) formed.")
+alertcondition(bullReclaim, "Bullish Reclaim Block(s)", "{{ticker}} {{interval}}: Bullish Reclaim Order Block(s) formed.")
+alertcondition(bearRejection, "Bearish Rejection Block", "{{ticker}} {{interval}}: Bearish Rejection Block (wick zone) formed.")
+alertcondition(bullRejection, "Bullish Rejection Block", "{{ticker}} {{interval}}: Bullish Rejection Block (wick zone) formed.")
