@@ -1,0 +1,85 @@
+//@version=5
+//[SHK] STC colored indicator
+//https://www.tradingview.com/u/shayankm/
+
+indicator(title='[SHK] Schaff Trend Cycle (STC)', shorttitle='STC', overlay=false)
+EEEEEE = input(12, 'Length')
+BBBB = input(26, 'FastLength')
+BBBBB = input(50, 'SlowLength')
+
+AAAA(BBB, BBBB, BBBBB) =>
+    fastMA = ta.ema(BBB, BBBB)
+    slowMA = ta.ema(BBB, BBBBB)
+    AAAA = fastMA - slowMA
+    AAAA
+
+AAAAA(EEEEEE, BBBB, BBBBB) =>
+    AAA = input(0.5)
+    var CCCCC = 0.0
+    var DDD = 0.0
+    var DDDDDD = 0.0
+    var EEEEE = 0.0
+    BBBBBB = AAAA(close, BBBB, BBBBB)
+    CCC = ta.lowest(BBBBBB, EEEEEE)
+    CCCC = ta.highest(BBBBBB, EEEEEE) - CCC
+    CCCCC := CCCC > 0 ? (BBBBBB - CCC) / CCCC * 100 : nz(CCCCC[1])
+    DDD := na(DDD[1]) ? CCCCC : DDD[1] + AAA * (CCCCC - DDD[1])
+    DDDD = ta.lowest(DDD, EEEEEE)
+    DDDDD = ta.highest(DDD, EEEEEE) - DDDD
+    DDDDDD := DDDDD > 0 ? (DDD - DDDD) / DDDDD * 100 : nz(DDDDDD[1])
+    EEEEE := na(EEEEE[1]) ? DDDDDD : EEEEE[1] + AAA * (DDDDDD - EEEEE[1])
+    EEEEE
+
+mAAAAA = AAAAA(EEEEEE, BBBB, BBBBB)
+mColor = mAAAAA > mAAAAA[1] ? color.new(color.green, 20) : color.new(color.red, 20)
+
+
+
+if mAAAAA[3] <= mAAAAA[2] and mAAAAA[2] > mAAAAA[1] and mAAAAA > 75
+    alert("Red", alert.freq_once_per_bar)
+if mAAAAA[3] >= mAAAAA[2] and mAAAAA[2] < mAAAAA[1] and mAAAAA < 25
+    alert("Green", alert.freq_once_per_bar)
+
+
+plot(mAAAAA, color=mColor, title='STC', linewidth=2)
+
+ul = plot(25, color=color.new(color.gray, 70))
+ll = plot(75, color=color.new(color.gray, 70))
+fill(ul, ll, color=color.new(color.gray, 96))
+
+
+
+
+filter(float src, int len) =>
+    var float filter = na
+    filter := ta.cum((src + (src[1] * 2) + (src[2] * 2) + src[3])/6)
+    (filter - filter[len])/len
+
+
+len = input.int(8, 'Length', 1)
+ex_sm = input.int(1, "Extra Smoothing", 1)
+smooth_rsi = input.int(1, "Smooth RSI Filter", 1)
+stoch_leng = input.int(13, "Stochastic Length", 1)
+k = input.int(3, "K", 1)
+smoothD = input.int(3, "D", 1)
+
+rsi(src) =>
+    up = math.sum(src > src[1] ? src - src[1] : 0, len)
+    down = math.sum(src < src[1] ? src[1] - src : 0, len)
+    rsi = up + down != 0 ? up / (up + down) : 0
+
+Close = ta.sma(rsi(filter(close, smooth_rsi)), ex_sm)
+
+stoch = ta.sma(ta.stoch(Close, Close, Close, stoch_leng), k)
+d     = ta.sma(stoch, smoothD)
+
+
+plot(stoch, color=color.new(color.purple, 0))
+plot(d, "RSI-based MA", color=color.yellow)
+rsiUpperBand = hline(80, "RSI Upper Band", color=#787B86)
+hline(50, "RSI Middle Band", color=color.new(#787B86, 50))
+rsiLowerBand = hline(20, "RSI Lower Band", color=#787B86)
+fill(rsiUpperBand, rsiLowerBand, color=color.rgb(126, 87, 194, 90), title="RSI Background Fill")
+
+
+
