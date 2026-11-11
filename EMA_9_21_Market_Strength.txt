@@ -1,0 +1,51 @@
+//@version=6
+indicator("EMA 9/21 + Market Strength", overlay=true)
+
+// EMA Settings
+ema9  = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+
+// ADX Settings
+diLength     = input.int(14, "DI Length", minval=1)
+adxSmoothing = input.int(14, "ADX Smoothing", minval=1)
+adxMinimum   = input.float(20.0, "Minimum ADX", minval=1.0, step=1.0)
+
+// ADX Calculation
+[plusDI, minusDI, adxValue] = ta.dmi(diLength, adxSmoothing)
+
+// Market Condition
+trendAllowed = adxValue >= adxMinimum
+
+bullishTrend = ema9 > ema21
+bearishTrend = ema9 < ema21
+
+// EMA Lines
+plot(ema9, title="EMA 9", color=color.green, linewidth=2)
+plot(ema21, title="EMA 21", color=color.red, linewidth=2)
+
+// Status Box
+var table statusBox = table.new(position.top_right, 2, 3, border_width=1)
+
+if barstate.islast
+    table.cell(statusBox, 0, 0, "Strength",
+         bgcolor=color.blue, text_color=color.white)
+
+    table.cell(statusBox, 1, 0, str.tostring(adxValue, "#.0"),
+         bgcolor=trendAllowed ? color.green : color.red,
+         text_color=color.white)
+
+    table.cell(statusBox, 0, 1, "MARKET",
+         bgcolor=color.gray, text_color=color.white)
+
+    table.cell(statusBox, 1, 1,
+         trendAllowed ? "TRENDING" : "SIDEWAYS",
+         bgcolor=trendAllowed ? color.green : color.red,
+         text_color=color.white)
+
+    table.cell(statusBox, 0, 2, "EMA TREND",
+         bgcolor=color.gray, text_color=color.white)
+
+    table.cell(statusBox, 1, 2,
+         bullishTrend ? "BULLISH" : bearishTrend ? "BEARISH" : "NEUTRAL",
+         bgcolor=bullishTrend ? color.green : bearishTrend ? color.red : color.gray,
+         text_color=color.white)

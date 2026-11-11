@@ -1,0 +1,662 @@
+// This work is licensed under Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+// https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © AlgoNorth
+//@version=6
+indicator("RSI Swing Points [AlgoNorth]", "RSP", overlay = true, max_labels_count = 500, max_lines_count = 200, max_polylines_count = 100, max_bars_back = 1000)
+
+// ─── Inputs ──────────────────────────────────────────────────────────────
+string GRP_R = "RSI swing points"
+int   rsiLen  = input.int(14, "RSI length", minval = 2, maxval = 100, group = GRP_R)
+int   pivL    = input.int(3, "Pivot left bars", minval = 1, maxval = 20, group = GRP_R)
+int   pivR    = input.int(2, "Pivot right bars", minval = 1, maxval = 20, group = GRP_R, tooltip = "Swing points A and C are confirmed RSI pivots, so each is known this many bars after it prints. B starts as one too; when C confirms, B moves to any bar between them where RSI went further (higher in a bottom swing, lower in a top).")
+int   maxSpan = input.int(120, "Max swing length (bars)", minval = 10, maxval = 450, group = GRP_R, tooltip = "A swing that hasn't broken this many bars after A is dropped.")
+int   holdN   = input.int(20, "Hold window (bars)", minval = 1, maxval = 200, group = GRP_R, tooltip = "A swing has held if price doesn't close back through C's price within this many bars of the break.")
+
+string GRP_L = "RSI levels"
+float hiLvl  = input.float(70, "Upper level (overbought)", minval = 51, maxval = 99, step = 1, group = GRP_L, tooltip = "A top failure swing needs A above this level and C holding below it. Drawn on the map as the dashed line with the red tag.")
+float midLvl = input.float(50, "Middle level", minval = 40, maxval = 60, step = 1, group = GRP_L, tooltip = "The RSI 50 line on price is the price where RSI equals this level. Candles are green with RSI above it, red below. The map fills the RSI's distance from it.")
+float loLvl  = input.float(30, "Lower level (oversold)", minval = 1, maxval = 49, step = 1, group = GRP_L, tooltip = "A bottom failure swing needs A below this level and C holding above it. Drawn on the map as the dashed line with the green tag.")
+
+string GRP_T = "On price"
+bool  colorBars  = input.bool(false, "Colour candles", group = GRP_T, tooltip = "Green while RSI is above the middle level (price above the RSI 50 line), red below.")
+bool  showLine   = input.bool(true, "RSI 50 line", group = GRP_T, tooltip = "Line on price at the price where RSI equals the middle level. The map's middle line sits at the same price.")
+bool  showSwings = input.bool(true, "Swing points on price", group = GRP_T, tooltip = "The swing points A, B and C, each on a dotted stem off the wick ending in a dot, the letter just past the dot with its RSI value past it, plus the FAILURE SWING tag on a dotted stem at the break candle. The most recent 45 swings are kept; older ones are removed whole, so no letter, tag or stem is left on its own.")
+float tagGap     = input.float(0.6, "Tag gap past the candles (ATR)", minval = 0.2, maxval = 5.0, step = 0.1, group = GRP_T, tooltip = "The FAILURE SWING tag clears the break candle, the candles next to it and the RSI 50 line and cloud by this much.")
+float wickGap    = input.float(0.15, "Gap between wick and stem (ATR)", minval = 0.0, maxval = 2.0, step = 0.05, group = GRP_T, tooltip = "Small space between the wick tip and the start of each dotted stem.")
+float ptStem     = input.float(1.0, "Swing point stem length (ATR)", minval = 0.3, maxval = 5.0, step = 0.1, group = GRP_T, tooltip = "How far each dot sits past the candles. The stem stretches further when the RSI 50 line or cloud is in the way, so the letter and its RSI value never sit on them.")
+
+string GRP_RB = "Soft cloud"
+bool  showRib = input.bool(true, "Show cloud", group = GRP_RB, tooltip = "A soft cloud from the RSI 50 line toward price, densest at the line and fading outward, wider the further RSI sits from the middle level. When RSI crosses the middle level it twists over the line to the other side.")
+float ribFull = input.float(22, "RSI distance for full width", minval = 5, maxval = 50, step = 1, group = GRP_RB, tooltip = "How far RSI must sit from the middle level for the cloud to open fully.")
+float ribMin  = input.float(0.25, "Minimum spread", minval = 0.05, maxval = 1.0, step = 0.05, group = GRP_RB, tooltip = "Cloud width with no momentum behind it, as a share of the smoothed gap between the line and price.")
+float ribMax  = input.float(0.9, "Full spread", minval = 0.1, maxval = 1.5, step = 0.05, group = GRP_RB, tooltip = "Cloud width at full momentum, as a share of the smoothed gap between the line and price. 1 = the full smoothed distance to price.")
+float ribAtr  = input.float(1.5, "Minimum width (ATR)", minval = 0.0, maxval = 5.0, step = 0.1, group = GRP_RB, tooltip = "Keeps the cloud from collapsing as price nears the line, so it stays about this many ATR wide or more. It narrows to a point only where it twists over the line.")
+int   ribLen  = input.int(8, "Cloud smoothing", minval = 1, maxval = 50, group = GRP_RB, tooltip = "Smooths the cloud's width. Higher = calmer edges.")
+int   xLen    = input.int(2, "Cross-over speed", minval = 1, maxval = 20, group = GRP_RB, tooltip = "How quickly the cloud swings across the line when RSI crosses the middle level. Higher = a slower, longer twist.")
+int   cloudTr = input.int(53, "Cloud transparency (inner)", minval = 0, maxval = 88, group = GRP_RB, tooltip = "Transparency of the layer next to the line. The four layers further out fade evenly toward 88.")
+
+string GRP_M = "RSI swing map"
+bool showMap  = input.bool(true, "Show map", group = GRP_M, tooltip = "The last failure swing that fired and the one forming next, with their swing points drawn as the same dots. A yellow dot rides the RSI at the next swing point the forming swing is waiting on, named for what it will confirm as (A, B or C), until it confirms. Once B is in, a line shows the RSI level the swing fires through. When it fires, the old swing clears.")
+int  mapWid   = input.int(40, "Max width (bars)", minval = 10, maxval = 150, group = GRP_M, tooltip = "The map runs from just before the earlier A (the last swing's or the forming one's) to the current bar, about one bar per column (a column is added wherever RSI crosses the middle level), so its right edge is live RSI. Longer than this, it's thinned to fit, keeping A, B, C and the break on the line.")
+int  mapGap   = input.int(14, "Distance from price (bars)", minval = 2, maxval = 100, group = GRP_M, tooltip = "How many bars to the right of the last candle the map starts.")
+bool showFill = input.bool(true, "Depth fill", group = GRP_M, tooltip = "Fills each shape between the RSI line and the middle level (bull colour above, bear colour below) with five soft layers: strongest under the RSI line, fading toward the middle level.")
+int  fillTr   = input.int(83, "Layer transparency", minval = 0, maxval = 100, group = GRP_M, tooltip = "Transparency of each of the five stacked layers. Lower = deeper colour.")
+string dotTxt = input.string("Small", "Dot size", options = ["Tiny", "Small", "Normal"], group = GRP_M, tooltip = "Size of every dot, on the map and on price. All of them are drawn the same size.")
+
+string GRP_P = "Panel"
+bool   showPanel = input.bool(true, "Show panel", group = GRP_P, tooltip = "Reads RSI against the middle level, the last failure swing and the swing forming next. All stats are counted on closed bars only.")
+string panelPos  = input.string("Top right", "Position", options = ["Top right", "Middle right", "Bottom right", "Top left", "Bottom left"], group = GRP_P)
+string panelTxt  = input.string("Small", "Text size", options = ["Tiny", "Small", "Normal"], group = GRP_P)
+
+string GRP_S = "Style"
+color bullCol = input.color(#00E676, "Bull · Bear · Neutral", inline = "c1", group = GRP_S)
+color bearCol = input.color(#FF1744, "", inline = "c1", group = GRP_S)
+color neutCol = input.color(#787B86, "", inline = "c1", group = GRP_S)
+color lineCol = input.color(#FFFFFF, "Lines · Text", inline = "c2", group = GRP_S)
+color txtCol  = input.color(#D1D4DC, "", inline = "c2", group = GRP_S, tooltip = "Left at their defaults, these and the forming swing point switch to dark versions on a light chart background, so nothing disappears.")
+color formCol = input.color(#FFD600, "Forming swing point", group = GRP_S, tooltip = "The next swing point the forming swing is waiting on, drawn on the map in this colour until it confirms.")
+
+// on a light chart background the default white, grey and yellow switch to dark versions, so nothing disappears
+bool  lightBg = color.r(chart.bg_color) * 0.299 + color.g(chart.bg_color) * 0.587 + color.b(chart.bg_color) * 0.114 > 140
+color lineC   = lightBg and lineCol == #FFFFFF ? #131722 : lineCol
+color txtC    = lightBg and txtCol == #D1D4DC ? #434651 : txtCol
+color formC   = lightBg and formCol == #FFD600 ? #A66300 : formCol
+
+// ─── Types & helpers ─────────────────────────────────────────────────────
+type Fsm
+    int   state = 0
+    float aV
+    float bV
+    float cV
+    int   aX
+    int   bX
+    int   cX
+    float aP
+    float bP
+    float cP
+
+type Swing
+    int   dir
+    float aV
+    float bV
+    float cV
+    int   aX
+    int   bX
+    int   cX
+    int   kX
+    float aP
+    float bP
+    float cP
+    int   res = 0
+
+fmt(float v) => str.tostring(v, "0.0")
+
+fmtNa(float v) => na(v) ? "—" : fmt(v)
+
+statStr(int hit, int n) => n > 0 ? str.tostring(100.0 * hit / n, "#") + "% · n " + str.tostring(n) : "not enough history"
+
+// RSI → map price: the middle level sits at the RSI 50 line's last price
+mapY(float v, float c, float h) => c + (math.max(10.0, math.min(90.0, v)) - midLvl) / 40.0 * h
+
+// price `ago` bars back, above (dir 1) or below (dir -1): clear of the wicks 3 bars either side, and pushed past
+// the RSI 50 line and its cloud (signed width rw) when they sit within `reach` of where the mark would go
+clearY(int ago, int dir, float ln, float rw, float pad, float reach) =>
+    float ext = dir == 1 ? high[ago] : low[ago]
+    for k = math.max(ago - 3, 0) to ago + 3
+        ext := dir == 1 ? math.max(ext, high[k]) : math.min(ext, low[k])
+    float y = ext
+    if not na(ln)
+        float zHi = math.max(ln, ln + nz(rw))
+        float zLo = math.min(ln, ln + nz(rw))
+        if dir == 1 and zHi > ext and zLo < ext + reach
+            y := zHi
+        if dir == -1 and zLo < ext and zHi > ext - reach
+            y := zLo
+    y + dir * pad
+
+// Wilder's average gain and loss, built exactly as ta.rsi builds them
+float avgUp = ta.rma(math.max(ta.change(close), 0), rsiLen)
+float avgDn = ta.rma(math.max(-ta.change(close), 0), rsiLen)
+
+// the price this bar would have to close at for RSI to equal lvl (lvl kept inside 0.01–99.99, so it never divides by zero)
+invRsi(float lvl) =>
+    float lvC = math.max(0.01, math.min(99.99, lvl))
+    float rs  = lvC / (100 - lvC)
+    float up  = (rsiLen - 1) * (rs * avgDn[1] - avgUp[1])
+    up >= 0 ? close[1] + up : close[1] - (rsiLen - 1) * (avgUp[1] / rs - avgDn[1])
+
+pt(int x, float y) => chart.point.from_index(x, y)
+
+seg(int xa, float ya, int xb, float yb, color c, int w) =>
+    polyline.new(array.from(pt(xa, ya), pt(xb, yb)), line_color = c, line_style = line.style_dashed, line_width = w)
+
+zoneFill(array<chart.point> pts, int sgn) =>
+    polyline.new(pts, closed = true, line_color = #00000000, fill_color = color.new(sgn == 1 ? bullCol : bearCol, fillTr))
+
+chartText(int x, float y, string t, string st, color c, string sz = size.normal) =>
+    label.new(x, y, t, style = st, color = #00000000, textcolor = c, size = sz, text_font_family = font.family_monospace, text_formatting = text.format_bold)
+
+chartTag(int x, float y, string t, color bg) =>
+    label.new(x, y, t, style = label.style_label_left, color = bg, textcolor = #0B0E14, size = size.normal, text_font_family = font.family_monospace, text_formatting = text.format_bold)
+
+// every dot, on the map and on price, shares one glyph size
+dotSz = dotTxt == "Tiny" ? size.normal : dotTxt == "Normal" ? size.huge : size.large
+
+dotMark(int x, float y, color c) =>
+    label.new(x, y, "●", style = label.style_label_center, color = #00000000, textcolor = c, size = dotSz)
+
+// one swing point on price: dotted stem off the wick ending in a dot, the letter just past the dot,
+// and its RSI value past the letter
+pointMark(array<line> stems, array<label> lbls, int x, float wick, float y, int dir, string letter, float v, float a) =>
+    string st = dir == 1 ? label.style_label_down : label.style_label_up
+    stems.push(line.new(x, wick + dir * wickGap * a, x, y, color = lineC, width = 1, style = line.style_dotted))
+    lbls.push(dotMark(x, y, lineC))
+    lbls.push(chartText(x, y, letter, st, lineC, size.large))
+    lbls.push(chartText(x, y, dir == 1 ? "RSI " + fmt(v) + "\n\n" : "\n\nRSI " + fmt(v), st, txtC))
+
+// Bottom failure swing on (lo, hi, r); the top swing runs the same machine on the mirrored RSI.
+method step(Fsm m, float lo, float hi, float r, float lvl, int x, float loP, float hiP, int span) =>
+    if m.state > 0 and bar_index - m.aX > span
+        m.state := 0
+    if not na(lo)
+        if lo < lvl and (m.state != 1 or lo < m.aV)
+            m.aV    := lo
+            m.aX    := x
+            m.aP    := loP
+            m.state := 1
+        else if m.state == 2 or (m.state == 3 and lo < m.cV)
+            // B is the rally's high: if RSI topped it before C on a bar that isn't a pivot, B moves to that bar
+            int kEnd = bar_index - m.bX - 1
+            if kEnd > pivR
+                for k = pivR + 1 to kEnd
+                    if r[k] > m.bV
+                        m.bV := r[k]
+                        m.bX := bar_index - k
+                        m.bP := hiP[k - pivR]
+            m.cV    := lo
+            m.cX    := x
+            m.cP    := loP
+            m.state := 3
+    if not na(hi) and (m.state == 1 or (m.state == 2 and hi > m.bV))
+        m.bV    := hi
+        m.bX    := x
+        m.bP    := hiP
+        m.state := 2
+    // C has to hold: a close with RSI back past the level drops the swing
+    if m.state == 3 and r < lvl and barstate.isconfirmed
+        m.state := 0
+    bool fired = m.state == 3 and r > m.bV and barstate.isconfirmed
+    if fired
+        m.state := 0
+    fired
+
+method toSwing(Fsm m, int dir) =>
+    Swing.new(dir, dir == 1 ? m.aV : 100 - m.aV, dir == 1 ? m.bV : 100 - m.bV, dir == 1 ? m.cV : 100 - m.cV, m.aX, m.bX, m.cX, bar_index, m.aP, m.bP, m.cP)
+
+// ─── Core ────────────────────────────────────────────────────────────────
+float rsi   = ta.rsi(close, rsiLen)
+float pl    = ta.pivotlow(rsi, pivL, pivR)
+float ph    = ta.pivothigh(rsi, pivL, pivR)
+int   px    = bar_index - pivR
+float pLo   = low[pivR]
+float pHi   = high[pivR]
+float atr   = ta.atr(14)
+float mapHi = ta.highest(high, 80)
+float mapLo = ta.lowest(low, 80)
+
+var Fsm bot = Fsm.new()
+var Fsm top = Fsm.new()
+bool fireBull = bot.step(pl, ph, rsi, loLvl, px, pLo, pHi, maxSpan)
+bool fireBear = top.step(100 - ph, 100 - pl, 100 - rsi, 100 - hiLvl, px, pHi, pLo, maxSpan)
+
+var Swing        lastSw   = na
+var array<Swing> pend     = array.new<Swing>()
+var int nBull = 0
+var int hBull = 0
+var int nBear = 0
+var int hBear = 0
+
+// hold test on earlier swings, on closed bars: res 1 = held (no close back through C's price within the hold window), -1 = failed
+if pend.size() > 0 and barstate.isconfirmed
+    for i = pend.size() - 1 to 0
+        Swing s = pend.get(i)
+        bool broke = s.dir == 1 ? close < s.cP : close > s.cP
+        if broke or bar_index - s.kX >= holdN
+            s.res := broke ? -1 : 1
+            if s.dir == 1
+                nBull += 1
+                hBull += broke ? 0 : 1
+            else
+                nBear += 1
+                hBear += broke ? 0 : 1
+            pend.remove(i)
+
+// failure swings are marked, mapped and counted
+Swing fired = na
+if fireBull
+    fired := bot.toSwing(1)
+else if fireBear
+    fired := top.toSwing(-1)
+
+if not na(fired)
+    lastSw := fired
+    pend.push(fired)
+
+// ─── RSI 50 line ─────────────────────────────────────────────────────────
+// The price where RSI equals the middle level. A close above it is RSI above the level, so candles colour off it.
+float mid50 = invRsi(midLvl)
+
+var int   trend   = 0
+var int   flipBar = na
+int       side    = na(rsi) ? 0 : rsi >= midLvl ? 1 : -1
+if side != trend
+    trend   := side
+    flipBar := bar_index
+
+color stateCol = trend == 1 ? bullCol : trend == -1 ? bearCol : neutCol
+barcolor(colorBars ? stateCol : na)
+
+// ─── Soft cloud ──────────────────────────────────────────────────────────
+// Five layers from the line toward price. The width is the line-to-price gap scaled by how far RSI sits from the
+// middle level, never narrower than the ATR floor, smoothed twice. Its side (+1 bull, -1 bear) is eased toward the
+// current side, so when RSI crosses the middle level the cloud swings across the line and twists over, taking the
+// colour of the side it's on.
+float gapS   = ta.ema(math.abs(close - mid50), ribLen)
+float strS   = ta.ema(math.min(1.0, math.abs(nz(rsi, midLvl) - midLvl) / ribFull), ribLen)
+float magRaw = math.max(nz(gapS) * (ribMin + (math.max(ribMax, ribMin) - ribMin) * nz(strS)), ribAtr * nz(atr))
+float mag    = ta.ema(ta.ema(magRaw, ribLen), ribLen)
+
+// two-pass EMA with a fractional length
+ema2(float x, float len) =>
+    var float e1 = na
+    var float e2 = na
+    float al = 2.0 / (len + 1)
+    e1 := na(e1) ? x : e1 + (x - e1) * al
+    e2 := na(e2) ? e1 : e2 + (e1 - e2) * al
+    e2
+
+float ribW  = ema2(trend, xLen + 4.0) * nz(mag)
+bool  ribOn = showRib and trend != 0 and not na(mid50)
+color cc    = ribW >= 0 ? bullCol : bearCol
+float trStp = (88 - cloudTr) / 4.0
+
+layer(int q) => ribOn ? mid50 + ribW * q / 5.0 : na
+
+pL = plot(mid50, "RSI 50 line", showLine ? lineC : na, 2)
+p1 = plot(layer(1), "Cloud 1", display = display.none)
+p2 = plot(layer(2), "Cloud 2", display = display.none)
+p3 = plot(layer(3), "Cloud 3", display = display.none)
+p4 = plot(layer(4), "Cloud 4", display = display.none)
+p5 = plot(layer(5), "Cloud 5", display = display.none)
+fill(pL, p1, ribOn ? color.new(cc, cloudTr) : na, "Cloud fill 1")
+fill(p1, p2, ribOn ? color.new(cc, cloudTr + trStp) : na, "Cloud fill 2")
+fill(p2, p3, ribOn ? color.new(cc, cloudTr + 2 * trStp) : na, "Cloud fill 3")
+fill(p3, p4, ribOn ? color.new(cc, cloudTr + 3 * trStp) : na, "Cloud fill 4")
+fill(p4, p5, ribOn ? color.new(cc, cloudTr + 4 * trStp) : na, "Cloud fill 5")
+
+// ─── Swing points on price ───────────────────────────────────────────────
+// swing points A, B and C each on a dotted stem off the wick ending in a dot, the letter and its RSI value past it;
+// a FAILURE SWING tag on a dotted stem at the break candle. Every stem starts a small gap past the wick tip,
+// and the marks clear the nearby candles, plus the RSI 50 line and its cloud when those are shown.
+int keepSwings = 45
+var array<label> swLbls  = array.new<label>()
+var array<line>  swStems = array.new<line>()
+var label fsTag  = na
+var line  fsStem = na
+var int   fsBar  = na
+var int   fsDir  = 0
+var float fsY    = na
+var float fsAtr  = na
+
+if not na(fired) and showSwings
+    bool  isBull = fired.dir == 1
+    color dc     = isBull ? bullCol : bearCol
+    float a      = nz(atr)
+    float stem   = ptStem * a
+    int   dA     = isBull ? -1 : 1
+    int   agoA   = bar_index - fired.aX
+    int   agoB   = bar_index - fired.bX
+    int   agoC   = bar_index - fired.cX
+    // the marks only step around the RSI 50 line and the cloud when those are switched on
+    bool  dodge  = showLine or showRib
+    float yA     = clearY(agoA, dA, dodge ? mid50[agoA] : na, showRib ? ribW[agoA] : na, stem, 2 * stem)
+    float yB     = clearY(agoB, -dA, dodge ? mid50[agoB] : na, showRib ? ribW[agoB] : na, stem, 2 * stem)
+    float yC     = clearY(agoC, dA, dodge ? mid50[agoC] : na, showRib ? ribW[agoC] : na, stem, 2 * stem)
+    pointMark(swStems, swLbls, fired.aX, fired.aP, yA, dA, "A", fired.aV, a)
+    pointMark(swStems, swLbls, fired.bX, fired.bP, yB, -dA, "B", fired.bV, a)
+    pointMark(swStems, swLbls, fired.cX, fired.cP, yC, dA, "C", fired.cV, a)
+    // tag above a bull break candle, below a bear one
+    fsDir  := isBull ? 1 : -1
+    fsBar  := bar_index
+    fsAtr  := a
+    fsY    := clearY(0, fsDir, dodge ? mid50 : na, showRib ? ribW : na, tagGap * fsAtr, 4 * tagGap * fsAtr)
+    float yStem = isBull ? high + wickGap * fsAtr : low - wickGap * fsAtr
+    fsStem := line.new(bar_index, yStem, bar_index, fsY, color = lineC, width = 1, style = line.style_dotted)
+    fsTag  := label.new(bar_index, fsY, "FAILURE SWING " + (isBull ? "▲" : "▼"), style = isBull ? label.style_label_down : label.style_label_up, color = dc, textcolor = #0B0E14, size = size.normal, text_font_family = font.family_monospace, text_formatting = text.format_bold)
+    swStems.push(fsStem)
+    swLbls.push(fsTag)
+    // keep the most recent swings; an older one goes as a whole (4 stems, 3 points × 3 labels, and the tag)
+    if swStems.size() > keepSwings * 4
+        for j = 1 to 4
+            swStems.shift().delete()
+        for j = 1 to 10
+            swLbls.shift().delete()
+else if showSwings and barstate.isconfirmed and not na(fsBar) and bar_index - fsBar <= 2
+    // the 2 candles after the break can still reach the tag, so push it further out if they do
+    float need = fsDir == 1 ? high + tagGap * fsAtr : low - tagGap * fsAtr
+    if fsDir * (need - fsY) > 0
+        fsY := need
+        fsStem.set_y2(fsY)
+        fsTag.set_y(fsY)
+
+// ─── Next swing ──────────────────────────────────────────────────────────
+// the swing forming next is the one further along; when they are level, a top while RSI is above the middle level, a bottom below it
+bool  nxTop   = top.state > bot.state or (top.state == bot.state and trend == 1)
+Fsm   nx      = nxTop ? top : bot
+color nCol    = nxTop ? bearCol : bullCol
+float nxB     = nxTop ? (top.state >= 2 ? 100 - top.bV : na) : (bot.state >= 2 ? bot.bV : na)
+float trigRaw = invRsi(nz(nxB, midLvl))
+float trigPx  = na(nxB) ? na : trigRaw
+
+// ─── RSI swing map ───────────────────────────────────────────────────────
+var array<polyline> mPoly = array.new<polyline>()
+var array<label>    mLab  = array.new<label>()
+
+Swing  cur     = lastSw
+string kind    = not na(cur) and cur.dir == -1 ? "top " : "bottom "
+
+if barstate.islast
+    for p in mPoly
+        p.delete()
+    mPoly.clear()
+    for l in mLab
+        l.delete()
+    mLab.clear()
+
+    if showMap
+        if na(cur)
+            mLab.push(chartText(bar_index + mapGap, close, "no failure swing yet", label.style_label_left, txtC))
+        else if bar_index - cur.aX + 6 >= 990
+            mLab.push(chartText(bar_index + mapGap, close, "last failure swing " + str.tostring(bar_index - cur.kX) + " bars back · too far to map", label.style_label_left, txtC))
+        else
+            color dc       = cur.dir == 1 ? bullCol : bearCol
+            // the swing forming next (its A is never more than the max swing length back, so it always fits)
+            bool  fm       = nx.state >= 1
+            // from 6 bars before the earlier A up to the current bar, so the map's right edge is live RSI
+            int   startAgo = math.max(bar_index - cur.aX, fm ? bar_index - nx.aX : 0) + 6
+            int   span     = startAgo + 1
+            int   w        = math.min(span, mapWid)
+            int   x0       = bar_index + mapGap
+            float mC       = nz(mid50, close)
+            float mH       = (mapHi - mapLo) / 2
+
+            // one RSI sample per column, plus A, B, C, the break and the forming swing's points each on a column of its own bar
+            array<int> rep = array.new<int>()
+            for c = 0 to w - 1
+                rep.push(startAgo - math.round(c * (span - 1.0) / (w - 1)))
+            array<int> mk = array.from(bar_index - cur.aX, bar_index - cur.bX, bar_index - cur.cX, bar_index - cur.kX)
+            array<int> fk = array.new<int>()
+            if fm
+                fk.push(bar_index - nx.aX)
+                if nx.state >= 2
+                    fk.push(bar_index - nx.bX)
+                if nx.state == 3
+                    fk.push(bar_index - nx.cX)
+            // the next swing point the forming swing is waiting on, until it confirms. Since its last point (A, then B) RSI has an
+            // extreme on each side: one past the last point means that point is still moving; otherwise the far-side extreme
+            // is the next point, and a C past the swing's level would start the swing again as a new A. A far-side extreme
+            // that is older and still inside its pivot window confirms first.
+            int    cdAgo = na
+            string cdLet = ""
+            if fm and nx.state < 3
+                bool  s1     = nx.state == 1
+                bool  lastHi = s1 == nxTop
+                float lastV  = nxTop ? 100 - (s1 ? nx.aV : nx.bV) : (s1 ? nx.aV : nx.bV)
+                int   hiK    = na
+                int   loK    = na
+                float hiV    = na
+                float loV    = na
+                // a tiny tolerance keeps the newer bar on a tie, so last-digit noise in RSI can't move the dot
+                for k = 0 to bar_index - (s1 ? nx.aX : nx.bX) - 1
+                    float v = rsi[k]
+                    if na(hiV) or v > hiV + 1e-9
+                        hiV := v
+                        hiK := k
+                    if na(loV) or v < loV - 1e-9
+                        loV := v
+                        loK := k
+                int   movK   = lastHi ? hiK : loK
+                int   nxtK   = lastHi ? loK : hiK
+                bool  moving = (lastHi ? hiV > lastV : loV < lastV) and not (nxtK > movK and nxtK < pivR)
+                float nxtV   = lastHi ? loV : hiV
+                cdAgo := moving ? movK : nxtK
+                cdLet := moving ? (s1 ? "A" : "B") : s1 ? "B" : (nxTop ? nxtV > hiLvl : nxtV < loLvl) ? "A" : "C"
+            for g in mk
+                if not rep.includes(g)
+                    rep.push(g)
+            for g in fk
+                if not rep.includes(g)
+                    rep.push(g)
+            if not na(cdAgo) and not rep.includes(cdAgo)
+                rep.push(cdAgo)
+            rep.sort(order.descending)
+            int nW = rep.size()
+            int cA = rep.indexof(mk.get(0))
+            int cB = rep.indexof(mk.get(1))
+            int cC = rep.indexof(mk.get(2))
+            int cK = rep.indexof(mk.get(3))
+
+            array<float> vals = array.new<float>(nW, midLvl)
+            float rMax = hiLvl
+            float rMin = loLvl
+            for c = 0 to nW - 1
+                float v = nz(rsi[rep.get(c)], midLvl)
+                vals.set(c, v)
+                rMax := math.max(rMax, v)
+                rMin := math.min(rMin, v)
+            float topY = mapY(rMax + 7, mC, mH)
+            float botY = mapY(rMin - 7, mC, mH)
+
+            // display columns: where the RSI line crosses the middle level between two samples, a column is added at the
+            // crossing itself, so the line meets the level on a bar and the fill splits exactly on the line
+            array<float> dv = array.new<float>()
+            array<bool>  dx = array.new<bool>()
+            array<int>   di = array.new<int>(nW, 0)
+            for c = 0 to nW - 1
+                float v = vals.get(c)
+                if c > 0
+                    float vp = vals.get(c - 1)
+                    if (vp >= midLvl) != (v >= midLvl)
+                        if vp == midLvl
+                            dx.set(dx.size() - 1, true)
+                        else
+                            dv.push(midLvl)
+                            dx.push(true)
+                di.set(c, dv.size())
+                dv.push(v)
+                dx.push(false)
+            int nD = dv.size()
+            int x1 = x0 + nD - 1
+
+            // depth fill: each run above / below the middle level is one shape, filled with five stacked layers whose outer
+            // edge is the RSI line and inner edge steps from the middle level toward it, so colour builds under the RSI line.
+            // Every shape gets its base layer first, then the four depth layers while the polyline budget lasts.
+            if showFill and fillTr < 100
+                array<int> lbS = array.new<int>()
+                array<int> lbE = array.new<int>()
+                int ls = 0
+                for d = 1 to nD - 1
+                    if dx.get(d) and d < nD - 1
+                        lbS.push(ls)
+                        lbE.push(d)
+                        ls := d
+                lbS.push(ls)
+                lbE.push(nD - 1)
+                // 100 polylines − 3 level lines − FAILURE POINT − RSI line − NEXT line − 1 spare
+                int budget = 93
+                for pass = 0 to 4
+                    for k = 0 to lbS.size() - 1
+                        int a0 = lbS.get(k)
+                        int a1 = lbE.get(k)
+                        if a1 > a0 and budget > 0
+                            float sm = 0.0
+                            for d = a0 to a1
+                                sm += dv.get(d) - midLvl
+                            float fr = pass * 0.2
+                            array<chart.point> pts = array.new<chart.point>()
+                            for d = a0 to a1
+                                pts.push(pt(x0 + d, mapY(dv.get(d), mC, mH)))
+                            for d = a1 to a0
+                                pts.push(pt(x0 + d, mapY(midLvl + (dv.get(d) - midLvl) * fr, mC, mH)))
+                            mPoly.push(zoneFill(pts, sm >= 0 ? 1 : -1))
+                            budget -= 1
+
+            // level lines and tags
+            float fpV  = cur.bV
+            array<float> lvls = array.from(loLvl, midLvl, hiLvl)
+            array<color> lcol = array.from(bullCol, neutCol, bearCol)
+            for i = 0 to 2
+                float lv = lvls.get(i)
+                float y  = mapY(lv, mC, mH)
+                bool  isMid = i == 1 and showLine
+                mPoly.push(seg(x0 - 1, y, x1 + 1, y, isMid ? color.new(lineC, 20) : color.new(txtC, 35), isMid ? 2 : 1))
+                if math.abs(fpV - lv) > 6 and (na(nxB) or math.abs(nxB - lv) > 6)
+                    mLab.push(chartTag(x1 + 2, y, str.tostring(lv, "#.#"), lcol.get(i)))
+            mLab.push(chartText(x0 - 1, topY, "RSI (" + str.tostring(rsiLen) + ") · SWING POINTS", label.style_label_lower_left, txtC))
+
+            // failure point; when the forming swing's fire level sits close by, the two labels split above and below
+            bool  tight = not na(nxB) and math.abs(nxB - fpV) < 5
+            float yF    = mapY(fpV, mC, mH)
+            mPoly.push(seg(x0 + di.get(cB), yF, x1 + 1, yF, lineC, 1))
+            mLab.push(chartText(x1 + 2, yF, "FAILURE POINT · RSI " + fmt(fpV), tight ? (fpV >= nxB ? label.style_label_lower_left : label.style_label_upper_left) : label.style_label_left, lineC))
+
+            // RSI line
+            array<chart.point> rp = array.new<chart.point>()
+            for d = 0 to nD - 1
+                rp.push(pt(x0 + d, mapY(dv.get(d), mC, mH)))
+            mPoly.push(polyline.new(rp, line_color = lineC, line_width = 2))
+
+            // swing point dots and letters (A / B / C), break dot
+            string stAC = cur.dir == 1 ? label.style_label_up : label.style_label_down
+            string stB  = cur.dir == 1 ? label.style_label_down : label.style_label_up
+            array<int>    mc = array.from(cA, cB, cC)
+            array<string> mt = array.from("A", "B", "C")
+            array<label>  ml = array.new<label>()
+            for i = 0 to 2
+                int   xm  = x0 + di.get(mc.get(i))
+                float ymk = mapY(vals.get(mc.get(i)), mC, mH)
+                mLab.push(dotMark(xm, ymk, lineC))
+                ml.push(chartText(xm, ymk, mt.get(i), i == 1 ? stB : stAC, txtC, size.large))
+                mLab.push(ml.last())
+            int   xK = x0 + di.get(cK)
+            float yK = mapY(vals.get(cK), mC, mH)
+            mLab.push(dotMark(xK, yK, dc))
+            mLab.push(chartText(xK, yK, "  BREAK " + (cur.dir == 1 ? "▲" : "▼"), label.style_label_left, dc))
+
+            // the swing forming next: its confirmed swing points, the next one it is waiting on in yellow, and the RSI level it fires through once B is in
+            if fm
+                string fAC = nxTop ? label.style_label_down : label.style_label_up
+                string fB  = nxTop ? label.style_label_up : label.style_label_down
+                for i = 0 to fk.size() - 1
+                    int    cf = rep.indexof(fk.get(i))
+                    string fs = i == 1 ? fB : fAC
+                    int    j  = mc.indexof(cf)
+                    // on the same bar and side as one of the last swing's points, the two letters share one label
+                    if j >= 0 and (j == 1 ? stB : stAC) == fs
+                        ml.get(j).set_text(mt.get(j) + "·" + mt.get(i))
+                    else
+                        int   xf = x0 + di.get(cf)
+                        float yf = mapY(vals.get(cf), mC, mH)
+                        mLab.push(dotMark(xf, yf, lineC))
+                        mLab.push(chartText(xf, yf, mt.get(i), fs, txtC, size.large))
+                if not na(cdAgo)
+                    int   cq = rep.indexof(cdAgo)
+                    int   xq = x0 + di.get(cq)
+                    float yq = mapY(vals.get(cq), mC, mH)
+                    mLab.push(dotMark(xq, yq, formC))
+                    mLab.push(chartText(xq, yq, cdLet + " FORMING", label.style_label_right, formC))
+                if not na(nxB)
+                    float yN = mapY(nxB, mC, mH)
+                    mPoly.push(seg(x0 + di.get(rep.indexof(fk.get(1))), yN, x1 + 1, yN, color.new(nCol, 20), 1))
+                    mLab.push(chartText(x1 + 2, yN, "NEXT " + (nxTop ? "▼ FIRES BELOW" : "▲ FIRES ABOVE") + " RSI " + fmt(nxB) + (nx.state == 3 ? " · ARMED" : " · NEEDS C"), tight ? (nxB > fpV ? label.style_label_lower_left : label.style_label_upper_left) : label.style_label_left, nCol))
+
+            // footer: how tops and bottoms have each held
+            mLab.push(chartText(x0 - 1, botY, "failure swings held " + str.tostring(holdN) + " bars · tops " + statStr(hBear, nBear) + " · bottoms " + statStr(hBull, nBull), label.style_label_upper_left, txtC))
+
+// ─── Panel ───────────────────────────────────────────────────────────────
+// Three questions at a glance: which side of RSI 50 and how strong, where it flips, and which failure swing is next.
+// Rows: read, flip level, last failure swing (did it hold), next swing (stage and points), its trigger as a price,
+// and how swings of that kind have held.
+
+// computed every bar so the history they use stays consistent
+float momS    = ta.ema(math.abs(nz(rsi, midLvl) - midLvl), ribLen)
+float momD    = momS - nz(momS[1], momS)
+
+color fg    = chart.fg_color
+pSize       = panelTxt == "Tiny" ? size.tiny : panelTxt == "Normal" ? size.normal : size.small
+vSize       = panelTxt == "Tiny" ? size.normal : panelTxt == "Normal" ? size.huge : size.large
+pPos        = panelPos == "Top left" ? position.top_left : panelPos == "Bottom left" ? position.bottom_left : panelPos == "Middle right" ? position.middle_right : panelPos == "Bottom right" ? position.bottom_right : position.top_right
+
+var table panel = showPanel ? table.new(pPos, 2, 10, bgcolor = chart.bg_color, frame_color = color.new(fg, 70), frame_width = 1, border_color = color.new(fg, 85), border_width = 1) : na
+
+// merged rows: header, settings, verdict, read, last bar
+if barstate.isfirst and showPanel
+    for r = 0 to 9
+        table.cell(panel, 0, r, "")
+        table.cell(panel, 1, r, "")
+    for r in array.from(0, 1, 2, 3, 9)
+        table.merge_cells(panel, 0, r, 1, r)
+
+rowL(int r, string t, string tip) =>
+    table.cell(panel, 0, r, t, text_color = fg, text_halign = text.align_left, text_size = pSize, tooltip = tip)
+
+rowR(int r, string t, color c) =>
+    table.cell(panel, 1, r, t, text_color = c, text_halign = text.align_right, text_size = pSize)
+
+if barstate.islast and showPanel
+    bool   has  = not na(cur)
+    float  nA   = nx.state >= 1 ? (nxTop ? 100 - nx.aV : nx.aV) : na
+    float  nC   = nx.state == 3 ? (nxTop ? 100 - nx.cV : nx.cV) : na
+    string hiS  = str.tostring(hiLvl, "#.#")
+    string mS   = str.tostring(midLvl, "#.#")
+    string loS  = str.tostring(loLvl, "#.#")
+    float  a    = nz(atr, 1)
+
+    string verdict = trend == 1 ? "BULL · RSI ABOVE " + mS : trend == -1 ? "BEAR · RSI BELOW " + mS : "WAITING FOR RSI"
+    string zone    = rsi > hiLvl ? "overbought" : rsi >= midLvl ? "bullish" : rsi >= loLvl ? "bearish" : "oversold"
+    string mom     = momD > 0.15 ? "momentum building" : momD < -0.15 ? "momentum fading" : "momentum steady"
+    int    onSide  = bar_index - flipBar + 1
+    string readTxt = trend == 0 ? "waiting for RSI history" : "RSI " + fmt(rsi) + " · " + zone + " · " + mom + " · " + str.tostring(onSide) + (onSide == 1 ? " bar " : " bars ") + (trend == 1 ? "above " : "below ") + mS
+
+    string flipL = trend == 1 ? "Flips bear below" : trend == -1 ? "Flips bull above" : "Flip level"
+    string flipV = na(mid50) ? "—" : str.tostring(mid50, format.mintick) + " · " + str.tostring(math.abs(close - mid50) / a, "0.0") + " ATR away"
+
+    string lastV = "—"
+    if has
+        string res = cur.res == 1 ? "held" : cur.res == -1 ? "failed" : "live " + str.tostring(math.min(bar_index - cur.kX, holdN)) + "/" + str.tostring(holdN)
+        lastV := (cur.dir == 1 ? "▲ " : "▼ ") + kind + "· " + str.tostring(bar_index - cur.kX) + " bars ago · " + res
+
+    string stage = nx.state == 1 ? "A in" : nx.state == 2 ? "A, B in" : nx.state == 3 ? "ARMED" : "not started"
+    string nextV = (nxTop ? "▼ top" : "▲ bottom") + " · " + stage + " · " + fmtNa(nA) + " → " + fmtNa(nxB) + " → " + fmtNa(nC)
+
+    string trig = "after B prints"
+    if not na(trigPx)
+        string at  = str.tostring(trigPx, format.mintick) + " · RSI " + fmt(nxB)
+        bool   hit = nxTop ? close <= trigPx : close >= trigPx
+        trig := nx.state == 2 ? at + " · arms at C" : at + " · " + (hit ? "at trigger" : str.tostring(math.abs(close - trigPx) / a, "0.0") + " ATR away")
+
+    table.cell(panel, 0, 0, "RSI Swing Points [AlgoNorth]", bgcolor = stateCol, text_color = #0B0E14, text_halign = text.align_left, text_size = pSize, text_formatting = text.format_bold)
+    table.cell(panel, 0, 1, "RSI " + str.tostring(rsiLen) + " · pivots " + str.tostring(pivL) + " / " + str.tostring(pivR) + " · levels " + hiS + " / " + mS + " / " + loS + " · hold " + str.tostring(holdN) + " bars · cloud " + str.tostring(ribFull, "#") + " / " + str.tostring(ribLen) + " / " + str.tostring(xLen) + (colorBars ? " · candles on" : ""), text_color = fg, text_halign = text.align_left, text_size = pSize, tooltip = "Live settings: RSI length · pivot left / right bars · upper / middle / lower levels · hold window (bars) · cloud full-width RSI distance / smoothing / cross-over speed · candle colouring.")
+    table.cell(panel, 0, 2, verdict, text_color = stateCol, text_halign = text.align_left, text_size = vSize, text_formatting = text.format_bold)
+    table.cell(panel, 0, 3, readTxt, text_color = fg, text_halign = text.align_left, text_size = pSize, tooltip = "RSI now and its zone (overbought above " + hiS + ", bullish " + mS + "–" + hiS + ", bearish " + loS + "–" + mS + ", oversold below " + loS + "). Momentum is whether RSI is moving away from " + mS + " (building) or back toward it (fading), smoothed like the cloud. Bars = how long RSI has stayed on this side of " + mS + ".")
+    rowL(4, flipL, "The RSI 50 line: the price where RSI is " + mS + " on this bar's close. A close through it flips the side, and the distance shows how much room price has.")
+    rowR(4, flipV, trend == 1 ? bearCol : trend == -1 ? bullCol : fg)
+    rowL(5, "Last failure swing", "The most recent failure swing, either direction, and how it played out: held = price didn't close back through C's price within " + str.tostring(holdN) + " bars, failed = it did, live = still inside that window.")
+    rowR(5, lastV, has ? (cur.dir == 1 ? bullCol : bearCol) : fg)
+    rowL(6, "Next swing", "The failure swing forming next: whichever is further along (when they're level, a top while RSI is above " + mS + ", a bottom below it), its stage, and RSI at A → B → C as each one prints.")
+    rowR(6, nextV, nCol)
+    rowL(7, "Fires " + (nxTop ? "below" : "above"), "The close that fires the forming swing on this bar: the price where RSI would cross its B. It can only fire once the swing is armed (C holds). Updates every bar.")
+    rowR(7, trig, nCol)
+    rowL(8, (nxTop ? "Tops" : "Bottoms") + " held " + str.tostring(holdN) + " bars", "How often past failure swings of the kind forming next held: price didn't close back through C's price within the hold window. n = swings counted.")
+    rowR(8, nxTop ? statStr(hBear, nBear) : statStr(hBull, nBull), fg)
+    table.cell(panel, 0, 9, "Last bar " + str.format_time(time, "yyyy-MM-dd HH:mm", syminfo.timezone) + " exchange time · " + str.tostring(bar_index + 1) + " bars", text_color = fg, text_halign = text.align_left, text_size = pSize, tooltip = "Time of the last bar and the number of bars loaded, so you can see the panel has recalculated.")
