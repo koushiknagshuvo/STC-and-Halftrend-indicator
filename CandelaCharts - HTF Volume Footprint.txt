@@ -1,0 +1,1212 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © CandelaCharts
+
+//@version=6
+indicator("CandelaCharts - HTF Volume Footprint", shorttitle = "CandelaCharts - HTF Volume Footprint", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500, max_bars_back = 5000)
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Colors   | #
+// # ========================================================================= #
+
+//#region
+
+colors_white                        = color.white
+colors_black                        = color.black
+colors_purple                       = color.purple
+colors_red                          = color.red
+colors_gray                         = color.gray
+colors_blue                         = color.blue
+colors_orange                       = color.orange
+colors_green                        = color.green
+colors_teal                         = color.teal
+colors_aqua                         = color.aqua
+colors_yellow                       = color.yellow
+colors_navy                         = color.navy
+colors_brown                        = #C69C6D
+colors_pink                         = #FF69B4
+colors_cyan                         = #00BCD4
+color_transparent                   = #ffffff00
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Inputs   | #
+// # ========================================================================= #
+
+//#region
+
+general_font                        = input.string("Monospace", "Text                        ", inline = "1.0", options = ["Default", "Monospace"], group = "General")
+general_text                        = input.string("Tiny", "", inline = "1.0", options = ["Tiny", "Small", "Normal", "Large", "Huge", "Auto"], group = "General", tooltip = "Customize global text size")
+general_brand_show                  = input.bool(false, "Hide Brand", group = "General")
+
+hvf_fp_scale_mode                   = input.string("Linear", "Volume Scaling      ", options = ["Square Root", "Logarithmic", "Linear"], group = "Footprint", tooltip = "Volume scaling algorithm. 'Square Root' balances high-volume POC clusters with clear differentiation across lower-volume rows (1k vs 2k vs 3k). 'Logarithmic' offers maximum low-end expansion. 'Linear' uses raw proportions.")
+hvf_fp_num_mode                     = input.string("All Rows", "Number Display     ", options = ["All Rows", "Significant Only (> Avg)", "POC Only", "Imbalances Only"], group = "Footprint")
+hvf_fp_show_numbers                 = input.bool(true, "Show Volume Numbers", group = "Footprint", tooltip = "Overlays monospace numerical Bid x Ask volume text on each footprint row.")
+hvf_fp_compact_num                  = input.bool(true, "Abbreviate Large (K/M)", group = "Footprint", tooltip = "Abbreviates volumes >= 1,000 as 1.5K and >= 1,000,000 as 1.2M to keep numbers compact.")
+hvf_fp_highlight_poc                = input.bool(true, "Highlight High Volume Node (POC)", group = "Footprint", tooltip = "Accentuates the price row with the highest total traded volume.")
+hvf_fp_gradient                     = input.bool(true, "Volume Gradient", group = "Footprint", tooltip = "Applies dynamic color gradients to the footprint bars based on volume intensity.")
+hvf_anchor_ny_midnight              = input.bool(false, "Anchor to NY Midnight", group = "Footprint", tooltip = "Anchors HTF periods to 00:00 New York Midnight.")
+
+hvf_imbalance_highlight             = input.bool(true, "Highlight Imbalances", group = "Order Flow Imbalances", tooltip = "Emphasizes aggressive diagonal buying or selling volume imbalances across adjacent price bins with accent borders.")
+hvf_imbalance_ratio                 = input.float(3.0, "Imbalance Ratio    ", minval = 1.5, maxval = 10.0, step = 0.5, group = "Order Flow Imbalances", tooltip = "Threshold multiplier (e.g., 3.0 means buying volume is at least 300% of opposing diagonal selling volume).")
+hvf_imbalance_min_vol               = input.float(0.0, "Min Imbalance Vol  ", minval = 0.0, group = "Order Flow Imbalances", tooltip = "Filters out low-volume noise from imbalance detection.")
+
+hvf_offset                          = input.int(15, "Projected Offset   ", minval = 1, maxval = 200, group = "Layout", tooltip = "Distance in bars from the current chart bar to the first projected HTF candle.")
+hvf_space                           = input.int(8, "Candle Space        ", minval = 1, maxval = 30, group = "Layout", tooltip = "Spacing between projected HTF candles.")
+hvf_candle_fp_space                 = input.int(1, "Footprint Gap       ", minval = 0, maxval = 20, group = "Layout", tooltip = "Horizontal bar spacing between the HTF candlestick body and its volume footprint.")
+hvf_group_margin                    = input.int(16, "Group Margin       ", minval = 1, maxval = 50, group = "Layout", tooltip = "Margin separation between Group I and Group II.")
+hvf_candle_w_bars                   = input.int(4, "Candle Width       ", minval = 2, maxval = 12, step = 1, group = "Layout", tooltip = "Width of the HTF candlestick body in bars (even numbers ensure centered wicks).")
+hvf_fp_w_bars                       = input.int(18, "Footprint Width    ", minval = 6, maxval = 50, step = 2, group = "Layout", tooltip = "Total horizontal bar width allocated for the Bid x Ask footprint ladder.")
+
+hvf_g1_show                         = input.bool(true, "Enable Group I  ", inline = "1.0", group = "HTF I")
+hvf_g1_tf                           = input.timeframe("D", "", inline = "1.0", group = "HTF I")
+hvf_g1_ltf                          = input.timeframe("1", "LTF Source         ", group = "HTF I", tooltip = "Lower timeframe used to calculate Bid x Ask volume intra-candle distribution. Must be <= Chart Timeframe.")
+hvf_g1_count                        = input.int(1, "Candle Count       ", minval = 1, maxval = 10, group = "HTF I", tooltip = "Number of HTF candles to display (Max 10).")
+hvf_g1_rows                         = input.int(40, "Row Resolution     ", minval = 10, maxval = 60, group = "HTF I", tooltip = "Number of vertical price bins per HTF candle.")
+hvf_g1_map                          = input.bool(false, "Map to Chart", group = "HTF I", tooltip = "Map the HTF candle body and wicks directly onto the chart over the timeframe bars.")
+
+hvf_g2_show                         = input.bool(false, "Enable Group II ", inline = "1.0", group = "HTF II")
+hvf_g2_tf                           = input.timeframe("W", "", inline = "1.0", group = "HTF II")
+hvf_g2_ltf                          = input.timeframe("1", "LTF Source         ", group = "HTF II", tooltip = "Lower timeframe used for Group II.")
+hvf_g2_count                        = input.int(1, "Candle Count       ", minval = 1, maxval = 10, group = "HTF II", tooltip = "Number of HTF candles to display in Group II (Max 10).")
+hvf_g2_rows                         = input.int(40, "Row Resolution     ", minval = 10, maxval = 60, group = "HTF II", tooltip = "Number of vertical price bins per HTF candle in Group II.")
+hvf_g2_map                          = input.bool(false, "Map to Chart", group = "HTF II", tooltip = "Map the HTF candle body and wicks directly onto the chart over the timeframe bars.")
+
+hvf_theme                           = input.string("Teal - Red", "Theme                  ", options = ["Custom", "Teal - Navy", "Teal - Orange", "Teal - Red", "Blue - Orange", "Green - Red", "Brown - Black", "Aqua - Black", "Blue - Pink", "Cyan - Purple", "Green - Navy"], group = "Themes")
+
+hvf_bull_color                      = input.color(colors_teal, "Bull / Bear                ", inline = "1.0", group = "Styles", tooltip = "Color applied to both HTF candles and Footprint (Bull / Bear) when Theme is Custom.")
+hvf_bear_color                      = input.color(colors_red, "", inline = "1.0", group = "Styles")
+hvf_poc_color                       = input.color(colors_yellow, "POC / Value Area       ", inline = "2.0", group = "Styles")
+hvf_va_color                        = input.color(colors_gray, "", inline = "2.0", group = "Styles")
+hvf_wick_color                      = input.color(colors_gray, "Wick / Numbers         ", inline = "3.0", group = "Styles")
+hvf_num_color                       = input.color(colors_black, "", inline = "3.0", group = "Styles")
+hvf_show_labels                     = input.bool(true, "Show HTF Header Labels", group = "Styles")
+hvf_map_sep                         = input.bool(true, "Show Mapped Separator", group = "Styles", tooltip = "Displays vertical dotted separator line at the start of mapped HTF candles.")
+hvf_map_trend                       = input.bool(false, "Show Mapped Trend Line", group = "Styles", tooltip = "Draws an internal trend line connecting the Open and Close of each mapped HTF candle.")
+hvf_show_va_labels                  = input.bool(true, "POC / VAH / VAL Labels   ", group = "Styles", tooltip = "Displays text labels for Point of Control (POC), Value Area High (VAH), and Value Area Low (VAL).")
+hvf_va_label_price                  = input.bool(false, "Include Price", group = "Styles", tooltip = "Appends the exact price value to the POC, VAH, and VAL labels.")
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Types   | #
+// # ========================================================================= #
+
+//#region
+
+type UDT_Store
+    line     [] bin_lines
+    box      [] bin_boxes
+    label    [] bin_labels
+
+type UDT_Layout
+    int candle_w
+    int candle_half_w
+    int half_fp_bars
+    int unit_width
+
+type UDT_Palette
+    color bid_bg_hi
+    color bid_bg_lo
+    color bid_bd_hi
+    color bid_bd_lo
+    color ask_bg_hi
+    color ask_bg_lo
+    color ask_bd_hi
+    color ask_bd_lo
+    color bid_solid_bg
+    color bid_solid_bd
+    color ask_solid_bg
+    color ask_solid_bd
+
+type UDT_LTF_Tape
+    array<float> c
+    array<float> o
+    array<float> h
+    array<float> l
+    array<float> v
+
+type HTF_Footprint_Candle
+    string          tf
+    float           o
+    float           h
+    float           l
+    float           c
+    int             ot
+    int             ct
+    int             o_idx
+    int             c_idx
+    bool            is_bull
+    bool            is_closed
+
+    // Granular LTF arrays
+    array<float>    ltf_c
+    array<float>    ltf_o
+    array<float>    ltf_h
+    array<float>    ltf_l
+    array<float>    ltf_v
+
+    // Calculated profile bin arrays
+    array<float>    bin_lows
+    array<float>    bin_highs
+    array<float>    bid_vols
+    array<float>    ask_vols
+    array<float>    tot_vols
+    array<bool>     buy_imbalances
+    array<bool>     sell_imbalances
+    int             buy_imb_count
+    int             sell_imb_count
+    int             poc_bin
+    float           poc_price
+    float           max_side_vol
+    float           avg_bin_vol
+    int             va_high_bin
+    int             va_low_bin
+    float           vah_price
+    float           val_price
+
+type UDT_Group
+    array<HTF_Footprint_Candle> candles
+    string tf
+    int    count
+    int    rows
+    bool   enabled
+    bool   mapped
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Formatting   | #
+// # ========================================================================= #
+
+//#region
+
+method text_size(string size) =>
+    switch size
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        "Huge"   => size.huge
+        "Auto"   => size.auto
+
+method font_style(string font) =>
+    switch font
+        "Default"   => font.family_default
+        "Monospace" => font.family_monospace
+
+minute_label(int mins) =>
+    switch
+        mins >= 60 and mins % 60 == 0 => str.tostring(int(mins / 60)) + "H"
+        => str.tostring(mins) + "m"
+
+tf_format(string tf) =>
+    string res = tf
+    if tf == "D" or tf == "1D"
+        res := "1D"
+    else if tf == "W" or tf == "1W"
+        res := "1W"
+    else if tf == "M" or tf == "1M"
+        res := "1M"
+    else
+        float mins = str.tonumber(tf)
+        if not na(mins)
+            res := minute_label(int(mins))
+    res
+
+is_dark() =>
+    chart.bg_color == color.black or chart.bg_color == #131722
+
+format_volume(float vol, bool compact) =>
+    if not compact
+        str.tostring(math.round(vol))
+    else if vol >= 1000000
+        str.tostring(vol / 1000000, "#.#") + "M"
+    else if vol >= 1000
+        str.tostring(vol / 1000, "#.#") + "K"
+    else
+        str.tostring(math.round(vol))
+
+pad_volume(string txt) =>
+    int len = str.length(txt)
+    switch
+        len == 1 => "   "
+        len == 2 => "  "
+        len == 3 => " "
+        => ""
+
+format_bid_ask(float bid_v, float ask_v, bool compact) =>
+    string s_bid = format_volume(bid_v, compact)
+    string s_ask = format_volume(ask_v, compact)
+    pad_volume(s_bid) + s_bid + " " + s_ask + pad_volume(s_ask)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Volume Math   | #
+// # ========================================================================= #
+
+//#region
+
+calc_volume_ratio(float vol, float ref_max, string mode) =>
+    float ratio = 0.0
+    if vol > 0.0 and ref_max > 0.0
+        float raw = math.min(1.0, vol / ref_max)
+        ratio := switch mode
+            "Square Root" => math.sqrt(raw)
+            "Logarithmic" => math.log(1.0 + 9.0 * raw) / math.log(10.0)
+            "Linear"      => raw
+            => math.sqrt(raw)
+    ratio
+
+bar_length(float ratio, int half_bars) =>
+    int(math.max(1, math.round(ratio * half_bars)))
+
+bar_colors(UDT_Palette pal, bool is_bid, float ratio) =>
+    color bg = is_bid ? pal.bid_solid_bg : pal.ask_solid_bg
+    color bd = is_bid ? pal.bid_solid_bd : pal.ask_solid_bd
+
+    if hvf_fp_gradient
+        bg := color.from_gradient(ratio, 0.0, 1.0, is_bid ? pal.bid_bg_lo : pal.ask_bg_lo, is_bid ? pal.bid_bg_hi : pal.ask_bg_hi)
+        bd := color.from_gradient(ratio, 0.0, 1.0, is_bid ? pal.bid_bd_lo : pal.ask_bd_lo, is_bid ? pal.bid_bd_hi : pal.ask_bd_hi)
+
+    [bg, bd]
+
+get_theme_palette(color custom_bull, color custom_bear) =>
+    color bull_c = switch hvf_theme
+        "Teal - Navy"   => colors_teal
+        "Teal - Orange" => colors_teal
+        "Teal - Red"    => colors_teal
+        "Blue - Orange" => colors_blue
+        "Green - Red"   => colors_green
+        "Brown - Black" => colors_brown
+        "Aqua - Black"  => colors_aqua
+        "Blue - Pink"   => colors_blue
+        "Cyan - Purple" => colors_cyan
+        "Green - Navy"  => colors_green
+        => custom_bull
+    color bear_c = switch hvf_theme
+        "Teal - Navy"   => colors_navy
+        "Teal - Orange" => colors_orange
+        "Teal - Red"    => colors_red
+        "Blue - Orange" => colors_orange
+        "Green - Red"   => colors_red
+        "Brown - Black" => colors_black
+        "Aqua - Black"  => colors_black
+        "Blue - Pink"   => colors_pink
+        "Cyan - Purple" => colors_purple
+        "Green - Navy"  => colors_navy
+        => custom_bear
+    [bull_c, bear_c]
+
+[theme_bull_color, theme_bear_color] = get_theme_palette(hvf_bull_color, hvf_bear_color)
+
+new_palette(color bull_c, color bear_c) =>
+    UDT_Palette.new(
+       bid_bg_hi = color.new(bear_c, 15),
+       bid_bg_lo = color.new(bear_c, 70),
+       bid_bd_hi = color.new(bear_c, 20),
+       bid_bd_lo = color.new(bear_c, 55),
+       ask_bg_hi = color.new(bull_c, 15),
+       ask_bg_lo = color.new(bull_c, 70),
+       ask_bd_hi = color.new(bull_c, 20),
+       ask_bd_lo = color.new(bull_c, 55),
+       bid_solid_bg = color.new(bear_c, 25),
+       bid_solid_bd = color.new(bear_c, 40),
+       ask_solid_bg = color.new(bull_c, 25),
+       ask_solid_bd = color.new(bull_c, 40)
+       )
+
+new_layout() =>
+    int candle_w = hvf_candle_w_bars % 2 == 0 ? hvf_candle_w_bars : hvf_candle_w_bars + 1
+    int half_fp_bars = math.max(4, int(hvf_fp_w_bars / 2))
+    UDT_Layout.new(
+       candle_w = candle_w,
+       candle_half_w = math.max(1, int(candle_w / 2)),
+       half_fp_bars = half_fp_bars,
+       unit_width = candle_w + hvf_candle_fp_space + half_fp_bars * 2 + hvf_space
+       )
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Drawing Primitives   | #
+// # ========================================================================= #
+
+//#region
+
+make_box(int left, float top, int right, float bottom, color bg, color border, int border_width) =>
+    box.new(left = left, top = top, right = right, bottom = bottom, bgcolor = bg, border_color = border, border_width = border_width)
+
+make_line(int x1, float y1, int x2, float y2, color css, int width, string ln_style = line.style_solid, bool extend_both = false) =>
+    line.new(
+       x1 = x1,
+       y1 = y1,
+       x2 = x2,
+       y2 = y2,
+       color = css,
+       width = width,
+       style = ln_style,
+       extend = extend_both ? extend.both : extend.none
+       )
+
+make_label(int x, float y, string txt, color txt_color, string lbl_style, string size_name, string tip = "") =>
+    label.new(
+       x = x,
+       y = y,
+       text = txt,
+       tooltip = tip,
+       color = color_transparent,
+       textcolor = txt_color,
+       style = lbl_style,
+       size = text_size(size_name),
+       text_font_family = font_style(general_font)
+       )
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Store   | #
+// # ========================================================================= #
+
+//#region
+
+var UDT_Store store = UDT_Store.new(
+   bin_lines = array.new<line>(),
+   bin_boxes = array.new<box>(),
+   bin_labels = array.new<label>()
+   )
+
+method clean(UDT_Store s) =>
+    for obj in s.bin_lines
+        obj.delete()
+    for obj in s.bin_boxes
+        obj.delete()
+    for obj in s.bin_labels
+        obj.delete()
+    s.bin_lines.clear()
+    s.bin_boxes.clear()
+    s.bin_labels.clear()
+
+method draw_price_line(UDT_Store s, int x1, int x2, float price, color css, int width) =>
+    s.bin_lines.push(line.new(x1 = x1, y1 = price, x2 = x2, y2 = price, color = css, width = width, style = line.style_solid))
+
+method draw_level_label(UDT_Store s, int x, float price, string name, string tip_prefix, color css) =>
+    string txt = hvf_va_label_price ? name + " " + str.tostring(price, format.mintick) : name
+    string tip = str.format("{0}: {1}", tip_prefix, str.tostring(price, format.mintick))
+    s.bin_labels.push(make_label(x, price, txt, css, label.style_label_left, general_text, tip))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   HTF Candle   | #
+// # ========================================================================= #
+
+//#region
+
+new_candle(string tf) =>
+    HTF_Footprint_Candle.new(
+       tf = tf,
+       o = open,
+       h = high,
+       l = low,
+       c = close,
+       ot = time,
+       ct = time,
+       o_idx = bar_index,
+       c_idx = bar_index,
+       is_bull = close >= open,
+       is_closed = false,
+       ltf_c = array.new<float>(),
+       ltf_o = array.new<float>(),
+       ltf_h = array.new<float>(),
+       ltf_l = array.new<float>(),
+       ltf_v = array.new<float>(),
+       bin_lows = array.new<float>(),
+       bin_highs = array.new<float>(),
+       bid_vols = array.new<float>(),
+       ask_vols = array.new<float>(),
+       tot_vols = array.new<float>(),
+       buy_imbalances = array.new<bool>(),
+       sell_imbalances = array.new<bool>(),
+       buy_imb_count = 0,
+       sell_imb_count = 0,
+       poc_bin = 0,
+       poc_price = na,
+       max_side_vol = 0.0,
+       avg_bin_vol = 0.0,
+       va_high_bin = 0,
+       va_low_bin = 0,
+       vah_price = na,
+       val_price = na
+       )
+
+method update_candle(HTF_Footprint_Candle candle) =>
+    candle.c := close
+    candle.ct := time
+    candle.c_idx := bar_index
+    candle.h := math.max(candle.h, high)
+    candle.l := math.min(candle.l, low)
+    candle.is_bull := candle.c >= candle.o
+
+method settle_candle(HTF_Footprint_Candle candle) =>
+    candle.is_closed := true
+    candle.ct := time[1]
+    candle.c_idx := bar_index - 1
+
+method accumulate_ltf(HTF_Footprint_Candle candle, UDT_LTF_Tape tape) =>
+    if not na(tape.c) and tape.c.size() > 0
+        for i = 0 to tape.c.size() - 1
+            candle.ltf_c.push(tape.c.get(i))
+            candle.ltf_o.push(tape.o.get(i))
+            candle.ltf_h.push(tape.h.get(i))
+            candle.ltf_l.push(tape.l.get(i))
+            candle.ltf_v.push(tape.v.get(i))
+    else
+        candle.ltf_c.push(close)
+        candle.ltf_o.push(open)
+        candle.ltf_h.push(high)
+        candle.ltf_l.push(low)
+        candle.ltf_v.push(volume)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Order Flow Imbalances   | #
+// # ========================================================================= #
+
+//#region
+
+method compute_imbalances(HTF_Footprint_Candle candle, int num_rows, float imb_ratio, float min_imb_vol) =>
+    int buy_cnt = 0
+    int sell_cnt = 0
+    if num_rows > 1
+        for r = 0 to num_rows - 2
+            float curr_bid = candle.bid_vols.get(r)
+            float next_ask = candle.ask_vols.get(r + 1)
+
+            // Buying Imbalance: aggressive ask volume outweighs diagonal lower bid
+            if next_ask >= curr_bid * imb_ratio and next_ask >= min_imb_vol and next_ask > 0.0
+                candle.buy_imbalances.set(r + 1, true)
+                buy_cnt += 1
+
+            // Selling Imbalance: aggressive bid volume outweighs diagonal higher ask
+            if curr_bid >= next_ask * imb_ratio and curr_bid >= min_imb_vol and curr_bid > 0.0
+                candle.sell_imbalances.set(r, true)
+                sell_cnt += 1
+
+    candle.buy_imb_count := buy_cnt
+    candle.sell_imb_count := sell_cnt
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Footprint Profile   | #
+// # ========================================================================= #
+
+//#region
+
+method reset_profile(HTF_Footprint_Candle candle) =>
+    candle.bin_lows.clear()
+    candle.bin_highs.clear()
+    candle.bid_vols.clear()
+    candle.ask_vols.clear()
+    candle.tot_vols.clear()
+    candle.buy_imbalances.clear()
+    candle.sell_imbalances.clear()
+    candle.buy_imb_count := 0
+    candle.sell_imb_count := 0
+    candle.poc_bin := 0
+    candle.poc_price := candle.c
+    candle.max_side_vol := 0.0
+    candle.avg_bin_vol := 0.0
+    candle.va_high_bin := 0
+    candle.va_low_bin := 0
+    candle.vah_price := candle.h
+    candle.val_price := candle.l
+
+method seed_bins(HTF_Footprint_Candle candle, int num_rows, float price_low, float step) =>
+    for r = 0 to num_rows - 1
+        float bin_low = price_low + r * step
+        candle.bin_lows.push(bin_low)
+        candle.bin_highs.push(bin_low + step)
+        candle.bid_vols.push(0.0)
+        candle.ask_vols.push(0.0)
+        candle.tot_vols.push(0.0)
+        candle.buy_imbalances.push(false)
+        candle.sell_imbalances.push(false)
+
+method add_to_bin(HTF_Footprint_Candle candle, int idx, float buy_v, float sell_v) =>
+    candle.bid_vols.set(idx, candle.bid_vols.get(idx) + sell_v)
+    candle.ask_vols.set(idx, candle.ask_vols.get(idx) + buy_v)
+
+// Distributes a single lower timeframe sample across the profile bins by price overlap
+method add_slice(HTF_Footprint_Candle candle, int num_rows, float price_low, float step, int idx) =>
+    float s_close = candle.ltf_c.get(idx)
+    float s_open = candle.ltf_o.get(idx)
+    float s_high = candle.ltf_h.get(idx)
+    float s_low = candle.ltf_l.get(idx)
+    float s_vol = candle.ltf_v.get(idx)
+
+    bool is_buy = s_close > s_open
+    bool is_sell = s_close < s_open
+    float buy_v = is_buy ? s_vol : is_sell ? 0.0 : s_vol * 0.5
+    float sell_v = is_sell ? s_vol : is_buy ? 0.0 : s_vol * 0.5
+
+    float s_range = s_high - s_low
+    if s_range <= 0.0
+        int bin_idx = int(math.floor((s_close - price_low) / step))
+        candle.add_to_bin(math.max(0, math.min(num_rows - 1, bin_idx)), buy_v, sell_v)
+    else
+        for r = 0 to num_rows - 1
+            float overlap = math.min(s_high, candle.bin_highs.get(r)) - math.max(s_low, candle.bin_lows.get(r))
+            if overlap > 0.0
+                float frac = overlap / s_range
+                candle.add_to_bin(r, buy_v * frac, sell_v * frac)
+
+// Resolves POC, max side volume and average bin volume; returns total traded volume
+method compute_stats(HTF_Footprint_Candle candle, int num_rows, float step) =>
+    float max_bin = 0.0
+    float max_side = 0.0
+    float sum_v = 0.0
+    int poc_bin = 0
+
+    for r = 0 to num_rows - 1
+        float bid_v = candle.bid_vols.get(r)
+        float ask_v = candle.ask_vols.get(r)
+        float total = bid_v + ask_v
+        candle.tot_vols.set(r, total)
+        sum_v += total
+        if total > max_bin
+            max_bin := total
+            poc_bin := r
+        max_side := math.max(max_side, math.max(bid_v, ask_v))
+
+    candle.poc_bin := poc_bin
+    candle.poc_price := candle.bin_lows.get(poc_bin) + step * 0.5
+    candle.max_side_vol := max_side > 0.0 ? max_side : max_bin
+    candle.avg_bin_vol := num_rows > 0 ? sum_v / num_rows : 0.0
+    sum_v
+
+// Auction Market Theory value area: expands 70% of volume outward from the POC
+method compute_value_area(HTF_Footprint_Candle candle, int num_rows, float sum_v) =>
+    int va_hi = candle.poc_bin
+    int va_lo = candle.poc_bin
+
+    if sum_v > 0.0 and num_rows > 0
+        float target_vol = sum_v * 0.70
+        float acc_vol = candle.tot_vols.get(candle.poc_bin)
+
+        while acc_vol < target_vol and (va_hi < num_rows - 1 or va_lo > 0)
+            float up_vol = va_hi < num_rows - 1 ? candle.tot_vols.get(va_hi + 1) : 0.0
+            float dn_vol = va_lo > 0 ? candle.tot_vols.get(va_lo - 1) : 0.0
+
+            if va_hi < num_rows - 1 and (va_lo == 0 or up_vol >= dn_vol)
+                va_hi += 1
+                acc_vol += up_vol
+            else if va_lo > 0
+                va_lo -= 1
+                acc_vol += dn_vol
+            else
+                break
+
+    candle.va_high_bin := va_hi
+    candle.va_low_bin := va_lo
+    candle.vah_price := candle.bin_highs.size() > va_hi ? candle.bin_highs.get(va_hi) : candle.h
+    candle.val_price := candle.bin_lows.size() > va_lo ? candle.bin_lows.get(va_lo) : candle.l
+
+method compute_footprint(HTF_Footprint_Candle candle, int num_rows) =>
+    candle.reset_profile()
+
+    float step = (candle.h - candle.l) / math.max(1, num_rows)
+    if step > 0 and candle.ltf_v.size() > 0
+        candle.seed_bins(num_rows, candle.l, step)
+        for i = 0 to candle.ltf_v.size() - 1
+            candle.add_slice(num_rows, candle.l, step, i)
+        float sum_v = candle.compute_stats(num_rows, step)
+        candle.compute_value_area(num_rows, sum_v)
+        candle.compute_imbalances(num_rows, hvf_imbalance_ratio, hvf_imbalance_min_vol)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Footprint Drawing   | #
+// # ========================================================================= #
+
+//#region
+
+method show_row_numbers(HTF_Footprint_Candle candle, int r, float tot_v) =>
+    bool show = false
+    switch hvf_fp_num_mode
+        "All Rows"                 => show := true
+        "Significant Only (> Avg)" => show := tot_v >= candle.avg_bin_vol
+        "POC Only"                 => show := r == candle.poc_bin
+        "Imbalances Only"          => show := candle.buy_imbalances.get(r) or candle.sell_imbalances.get(r)
+    show
+
+method draw_row(HTF_Footprint_Candle candle, int r, UDT_Store s, UDT_Palette pal, int fp_center, int half_fp_bars, float ref_max) =>
+    float bin_low = candle.bin_lows.get(r)
+    float bin_high = candle.bin_highs.get(r)
+    float bid_v = candle.bid_vols.get(r)
+    float ask_v = candle.ask_vols.get(r)
+    float tot_v = bid_v + ask_v
+
+    float ratio_b = calc_volume_ratio(bid_v, ref_max, hvf_fp_scale_mode)
+    float ratio_a = calc_volume_ratio(ask_v, ref_max, hvf_fp_scale_mode)
+    int bid_len = bid_v > 0.0 ? bar_length(ratio_b, half_fp_bars) : 0
+    int ask_len = ask_v > 0.0 ? bar_length(ratio_a, half_fp_bars) : 0
+
+    // Bid volume bar (extends left from the center split)
+    if bid_len > 0
+        [b_bg, b_bd] = bar_colors(pal, true, ratio_b)
+        s.bin_boxes.push(make_box(fp_center - bid_len, bin_high, fp_center, bin_low, b_bg, b_bd, 1))
+
+    // Ask volume bar (extends right from the center split)
+    if ask_len > 0
+        [a_bg, a_bd] = bar_colors(pal, false, ratio_a)
+        s.bin_boxes.push(make_box(fp_center, bin_high, fp_center + ask_len, bin_low, a_bg, a_bd, 1))
+
+    // Imbalance accent highlight
+    if hvf_imbalance_highlight
+        if candle.buy_imbalances.get(r)
+            int ask_imb_len = math.max(1, ask_len)
+            s.bin_boxes.push(make_box(fp_center, bin_high, fp_center + ask_imb_len, bin_low, color.new(theme_bull_color, 75), theme_bull_color, 2))
+        if candle.sell_imbalances.get(r)
+            int bid_imb_len = math.max(1, bid_len)
+            s.bin_boxes.push(make_box(fp_center - bid_imb_len, bin_high, fp_center, bin_low, color.new(theme_bear_color, 75), theme_bear_color, 2))
+
+    // High Volume Node (POC) accent border
+    if hvf_fp_highlight_poc and r == candle.poc_bin
+        s.bin_boxes.push(make_box(
+           fp_center - math.max(1, bid_len),
+           bin_high,
+           fp_center + math.max(1, ask_len),
+           bin_low,
+           color.new(hvf_poc_color, 75),
+           hvf_poc_color,
+           2
+           ))
+
+    // Monospace Bid x Ask overlay
+    if hvf_fp_show_numbers and (bid_v > 0 or ask_v > 0) and candle.show_row_numbers(r, tot_v)
+        color lbl_css = r == candle.poc_bin ? hvf_poc_color : (candle.buy_imbalances.get(r) ? theme_bull_color : (candle.sell_imbalances.get(r) ? theme_bear_color : hvf_num_color))
+        s.bin_labels.push(make_label(
+           fp_center,
+           (bin_low + bin_high) * 0.5,
+           format_bid_ask(bid_v, ask_v, hvf_fp_compact_num),
+           lbl_css,
+           label.style_label_center,
+           general_text
+           ))
+
+method draw_footprint(HTF_Footprint_Candle candle, UDT_Store s, UDT_Palette pal, int fp_center, int half_fp_bars) =>
+    int bins = candle.bin_lows.size()
+    if bins > 0
+        float ref_max = math.max(1.0, candle.max_side_vol)
+        for r = 0 to bins - 1
+            candle.draw_row(r, s, pal, fp_center, half_fp_bars, ref_max)
+
+method draw_value_area(HTF_Footprint_Candle candle, UDT_Store s, int fp_center, int half_fp_bars) =>
+    if not na(candle.vah_price) and not na(candle.val_price)
+        int fp_left = fp_center - half_fp_bars
+        int fp_right = fp_center + half_fp_bars
+
+        s.draw_price_line(fp_left, fp_right, candle.vah_price, hvf_va_color, 2)
+        s.draw_price_line(fp_left, fp_right, candle.val_price, hvf_va_color, 2)
+
+        if hvf_show_va_labels
+            s.draw_level_label(fp_right, candle.vah_price, "VAH", "Value Area High", hvf_va_color)
+            s.draw_level_label(fp_right, candle.val_price, "VAL", "Value Area Low", hvf_va_color)
+            if not na(candle.poc_price)
+                s.draw_level_label(fp_right, candle.poc_price, "POC", "Point of Control", hvf_poc_color)
+
+method draw_body(HTF_Footprint_Candle candle, UDT_Store s, int c_left, int c_right) =>
+    color css = candle.is_bull ? theme_bull_color : theme_bear_color
+    float body_top = math.max(candle.o, candle.c)
+    float body_bot = math.min(candle.o, candle.c)
+    int wick_x = math.round(math.avg(c_left, c_right))
+
+    s.bin_boxes.push(make_box(c_left, body_top, c_right, body_bot, css, css, 1))
+    if candle.h > body_top
+        s.bin_lines.push(make_line(wick_x, body_top, wick_x, candle.h, css, 1))
+    if body_bot > candle.l
+        s.bin_lines.push(make_line(wick_x, body_bot, wick_x, candle.l, css, 1))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Projected Rendering   | #
+// # ========================================================================= #
+
+//#region
+
+render_htf_group(UDT_Group group, int base_offset, int rows, UDT_Layout layout, UDT_Palette pal, UDT_Store s) =>
+    int total = math.min(group.candles.size(), group.count)
+
+    if total > 0
+        float group_max_h = -1.0e10
+        int min_x = 999999999
+        int max_x = -999999999
+
+        for i = 0 to total - 1
+            HTF_Footprint_Candle candle = group.candles.get(i)
+            candle.compute_footprint(rows)
+
+            int shift = base_offset + (total - 1 - i) * layout.unit_width
+            int candle_center = last_bar_index + shift + layout.candle_half_w
+            int c_left = candle_center - layout.candle_half_w
+            int c_right = candle_center + layout.candle_half_w
+            int fp_center = c_right + hvf_candle_fp_space + 1 + layout.half_fp_bars
+
+            group_max_h := math.max(group_max_h, candle.h)
+            min_x := math.min(min_x, c_left)
+            max_x := math.max(max_x, fp_center + layout.half_fp_bars)
+
+            candle.draw_body(s, c_left, c_right)
+
+            // Footprint center split divider
+            if candle.bin_highs.size() > 0
+                s.bin_lines.push(make_line(
+                   fp_center,
+                   candle.bin_highs.last(),
+                   fp_center,
+                   candle.bin_lows.first(),
+                   color.new(hvf_wick_color, 60),
+                   1,
+                   line.style_dotted
+                   ))
+
+            candle.draw_footprint(s, pal, fp_center, layout.half_fp_bars)
+            candle.draw_value_area(s, fp_center, layout.half_fp_bars)
+
+        // Centered timeframe header tag above the candle + ladder cluster
+        if hvf_show_labels and group_max_h > -1.0e9
+            int group_center = math.round((min_x + max_x) * 0.5)
+            s.bin_labels.push(make_label(group_center, group_max_h, tf_format(group.tf), chart.fg_color, label.style_label_down, "Large"))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Mapped Rendering   | #
+// # ========================================================================= #
+
+//#region
+
+draw_mapped_group(UDT_Group group, color bull_c, color bear_c, bool is_group2, UDT_Store s) =>
+    int total = math.min(group.candles.size(), group.count)
+
+    if total > 0
+        for i = 0 to total - 1
+            HTF_Footprint_Candle candle = group.candles.get(i)
+            if na(candle.o) or na(candle.h) or na(candle.l) or na(candle.c)
+                continue
+
+            int x1 = candle.o_idx
+            int x2 = candle.is_closed ? candle.c_idx : bar_index
+            if x2 < x1
+                x2 := x1
+
+            color css = candle.is_bull ? bull_c : bear_c
+            float body_top = math.max(candle.o, candle.c)
+            float body_bot = math.min(candle.o, candle.c)
+            int wick_x = math.round(math.avg(x1, x2))
+
+            s.bin_boxes.push(make_box(x1, body_top, x2, body_bot, color.new(css, 85), css, 1))
+
+            if candle.h > body_top
+                s.bin_lines.push(make_line(wick_x, body_top, wick_x, candle.h, css, 1))
+            if candle.l < body_bot
+                s.bin_lines.push(make_line(wick_x, body_bot, wick_x, candle.l, css, 1))
+
+            if hvf_map_trend
+                s.bin_lines.push(make_line(x1, candle.o, x2, candle.c, css, 1))
+
+            if hvf_map_sep and x1 > 0
+                s.bin_lines.push(make_line(x1, candle.h, x1, candle.l, color.new(hvf_wick_color, 70), 1, line.style_dotted, true))
+
+            if hvf_show_labels
+                string tf_txt = is_group2 ? tf_format(group.tf) + "\n \n " : tf_format(group.tf) + "\n"
+                s.bin_labels.push(make_label(wick_x, candle.h, tf_txt, css, label.style_label_down, general_text))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Variables   | #
+// # ========================================================================= #
+
+//#region
+
+var UDT_Group group_1 = UDT_Group.new(
+   candles = array.new<HTF_Footprint_Candle>(),
+   tf = hvf_g1_tf,
+   count = hvf_g1_count,
+   rows = hvf_g1_rows,
+   enabled = hvf_g1_show,
+   mapped = hvf_g1_map
+   )
+
+var UDT_Group group_2 = UDT_Group.new(
+   candles = array.new<HTF_Footprint_Candle>(),
+   tf = hvf_g2_tf,
+   count = hvf_g2_count,
+   rows = hvf_g2_rows,
+   enabled = hvf_g2_show,
+   mapped = hvf_g2_map
+   )
+
+const string default_tz = "America/New_York"
+const string ny_session = "0000-0000"
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Group Tracking   | #
+// # ========================================================================= #
+
+//#region
+
+advance_group(UDT_Group group, bool is_new_period, UDT_LTF_Tape tape) =>
+    array<HTF_Footprint_Candle> candles = group.candles
+
+    if is_new_period or candles.size() == 0
+        if candles.size() > 0
+            candles.first().settle_candle()
+        if candles.size() >= group.count
+            candles.pop()
+        candles.unshift(new_candle(group.tf))
+    else if candles.size() > 0
+        candles.first().update_candle()
+
+    if candles.size() > 0
+        candles.first().accumulate_ltf(tape)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Core Logic   | #
+// # ========================================================================= #
+
+//#region
+
+// Timeframe Validation
+ltf_valid(string ltf) =>
+    timeframe.in_seconds(timeframe.period) >= timeframe.in_seconds(ltf)
+
+g1_ltf_valid = ltf_valid(hvf_g1_ltf)
+g2_ltf_valid = ltf_valid(hvf_g2_ltf)
+tf_warning = (hvf_g1_show and not g1_ltf_valid) or (hvf_g2_show and not g2_ltf_valid)
+
+// Lower Timeframe Data Requests
+[g1_cL, g1_oP, g1_hI, g1_lO, g1_vO] = request.security_lower_tf("", g1_ltf_valid ? hvf_g1_ltf : timeframe.period, [close, open, high, low, volume])
+[g2_cL, g2_oP, g2_hI, g2_lO, g2_vO] = request.security_lower_tf("", g2_ltf_valid ? hvf_g2_ltf : timeframe.period, [close, open, high, low, volume])
+
+UDT_LTF_Tape g1_tape = UDT_LTF_Tape.new(c = g1_cL, o = g1_oP, h = g1_hI, l = g1_lO, v = g1_vO)
+UDT_LTF_Tape g2_tape = UDT_LTF_Tape.new(c = g2_cL, o = g2_oP, h = g2_hI, l = g2_lO, v = g2_vO)
+
+// Session anchor triggers
+string anchor_ses = hvf_anchor_ny_midnight ? ny_session : ""
+string anchor_tz = hvf_anchor_ny_midnight ? default_tz : ""
+
+session_begins(string tf, string ses, string tz) =>
+    ta.change(time(tf, ses, na(tz) ? "" : tz)) != 0
+
+bool g1_new_bar = session_begins(hvf_g1_tf, anchor_ses, anchor_tz)
+bool g2_new_bar = session_begins(hvf_g2_tf, anchor_ses, anchor_tz)
+
+if group_1.enabled and g1_ltf_valid
+    advance_group(group_1, g1_new_bar, g1_tape)
+
+if group_2.enabled and g2_ltf_valid
+    advance_group(group_2, g2_new_bar, g2_tape)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Visuals   | #
+// # ========================================================================= #
+
+//#region
+
+draw_warning_table() =>
+    var table alert_tbl = table.new(position.top_right, 1, 2, bgcolor = na, frame_color = chart.fg_color, frame_width = 1, border_color = chart.fg_color, border_width = 1)
+    table.cell(alert_tbl, 0, 0, "HTF Footprint Warning", text_color = colors_white, bgcolor = is_dark() ? #1e293b : chart.fg_color, text_size = size.small, text_font_family = font_style(general_font))
+    table.cell(alert_tbl, 0, 1, "Chart TF must be >= LTF Source setting", text_color = is_dark() ? colors_white : colors_black, bgcolor = is_dark() ? chart.bg_color : colors_white, text_size = size.tiny, text_font_family = font_style(general_font))
+
+active_candles(UDT_Group group) =>
+    group.enabled ? math.min(group.candles.size(), group.count) : 0
+
+if barstate.islast
+    store.clean()
+
+    if tf_warning
+        draw_warning_table()
+
+    UDT_Layout layout = new_layout()
+    UDT_Palette palette = new_palette(theme_bull_color, theme_bear_color)
+
+    // Row budget: preserve the 500-box limit across all active footprints
+    int total_active_candles = active_candles(group_1) + active_candles(group_2)
+    int max_safe_rows = math.floor(460 / math.max(1, total_active_candles * 2))
+    int rows_g1 = math.max(10, math.min(group_1.rows, max_safe_rows))
+    int rows_g2 = math.max(10, math.min(group_2.rows, max_safe_rows))
+
+    // Map HTF Candles to Chart
+    if group_1.enabled and group_1.mapped and g1_ltf_valid
+        draw_mapped_group(group_1, theme_bull_color, theme_bear_color, false, store)
+
+    if group_2.enabled and group_2.mapped and g2_ltf_valid
+        draw_mapped_group(group_2, theme_bull_color, theme_bear_color, true, store)
+
+    // Render Projected Groups
+    if group_1.enabled and g1_ltf_valid
+        render_htf_group(group_1, hvf_offset, rows_g1, layout, palette, store)
+
+    if group_2.enabled and g2_ltf_valid
+        int g2_offset = hvf_offset + (active_candles(group_1) * layout.unit_width + hvf_group_margin)
+        render_htf_group(group_2, g2_offset, rows_g2, layout, palette, store)
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
+
+
+
+
+
+
+
+
+
+
+// # ========================================================================= #
+// # |   Brand   | #
+// # ========================================================================= #
+
+//#region
+
+if barstate.isfirst and general_brand_show == false
+    var table brand = table.new(position.bottom_right, 1, 1, bgcolor = chart.bg_color)
+    table.cell(brand, 0, 0, "© CandelaCharts", text_color = colors_gray, text_halign = text.align_center, text_size = text_size(general_text), text_font_family = font_style(general_font))
+
+//#endregion
+
+// # ========================================================================= #
+// # |   End   | #
+// # ========================================================================= #
